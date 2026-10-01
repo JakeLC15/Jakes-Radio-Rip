@@ -1,9 +1,10 @@
 FROM debian:bookworm-slim
 
-# Install streamripper and jq using Debian's package manager
+# Install streamripper, jq, curl, and bash
 RUN apt-get update && apt-get install -y --no-install-recommends \
     streamripper \
     jq \
+    curl \
     bash \
     && rm -rf /var/lib/apt/lists/*
 
