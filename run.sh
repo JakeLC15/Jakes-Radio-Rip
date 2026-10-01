@@ -1,4 +1,10 @@
 #!/bin/bash
+
+echo "========================================"
+echo "JAKE'S STATION RIPPER STARTING"
+echo "BUILD TEST: 2026-10-01-1"
+echo "========================================"
+
 set -uo pipefail
 
 echo "Streamripper package:"
