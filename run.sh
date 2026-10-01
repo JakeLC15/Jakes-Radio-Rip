@@ -33,9 +33,8 @@ for URL in "${STREAM_URLS[@]}"; do
                 echo "✅ Stream active! Saving to: $STREAM_DIR"
                 
                 jq --arg key "$FOLDER_NAME" --arg val "Online" '. + {($key): $val}' "$STATUS_FILE" > "${STATUS_FILE}.tmp" && mv "${STATUS_FILE}.tmp" "$STATUS_FILE"
-                
-                # Added the -q flag to turn off the continuous file size spam
-                streamripper "$URL" -d "$STREAM_DIR" -a -q
+
+                streamripper "$URL" -d "$STREAM_DIR" -a --quiet
                 SUCCESS=true
                 break
             else
