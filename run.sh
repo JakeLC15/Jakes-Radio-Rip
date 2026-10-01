@@ -17,6 +17,10 @@ if [ ${#STREAM_URLS[@]} -eq 0 ]; then
     exit 1
 fi
 
+echo "=== Streamripper version ==="
+streamripper --version
+echo "============================"
+
 mkdir -p "$BASE_OUTPUT_DIR"
 echo "{}" > "$STATUS_FILE"
 
