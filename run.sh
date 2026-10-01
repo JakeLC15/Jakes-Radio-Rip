@@ -45,16 +45,22 @@ update_status() {
     ) 200>"$STATUS_LOCK"
 }
 
-echo "=== STREAM HEADERS ==="
-curl -k -sS -D - -o /dev/null --max-time 5 "$URL" | head -30
-echo "======================"
-
 for URL in "${STREAM_URLS[@]}"; do
     FOLDER_NAME=$(echo "$URL" | awk -F/ '{print $3}')
     STREAM_DIR="${BASE_OUTPUT_DIR}/${FOLDER_NAME}"
 
     (
         SUCCESS=false
+
+        echo ""
+        echo "========================================"
+        echo "TESTING STREAM:"
+        echo "$URL"
+        echo "========================================"
+
+        echo "=== STREAM HEADERS ==="
+        curl -k -sS -D - -o /dev/null --max-time 5 "$URL" 2>&1 | head -30
+        echo "======================"
 
         for ((attempt=1; attempt<=MAX_RETRIES; attempt++)); do
             echo "🔍 [Attempt $attempt/$MAX_RETRIES] Validating: $URL..."
@@ -69,7 +75,7 @@ for URL in "${STREAM_URLS[@]}"; do
 
                 streamripper "$URL" \
                     -d "$STREAM_DIR" \
-                    -a \
+                    -a
 
                 SUCCESS=true
                 break
