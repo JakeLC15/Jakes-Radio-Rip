@@ -2,25 +2,38 @@
 set -e
 
 CONFIG_PATH="/data/options.json"
-OUTPUT_DIR="/media/DATA2/Music/jakes_station_rip"
 
-# 1. Read the stream URL from the Home Assistant add-on options
+# 1. Read the base configuration options
 if [ -f "$CONFIG_PATH" ]; then
-    STREAM_URL=$(jq --raw-output '.stream_url // empty' "$CONFIG_PATH")
+    OUTPUT_DIR=$(jq --raw-output '.output_dir // "/media/stationripper"' "$CONFIG_PATH")
+    # Read the streams list into a bash array
+    mapfile -t STREAM_URLS < <(jq --raw-output '.streams[] // empty' "$CONFIG_PATH")
 fi
 
-# 2. Safety check: make sure the user actually provided a URL
-if [ -z "$STREAM_URL" ]; then
-    echo "❌ Error: No 'stream_url' found in your add-on configuration!"
+# 2. Safety checks
+if [ ${#STREAM_URLS[@]} -eq 0 ]; then
+    echo "❌ Error: No URLs found in your 'streams' configuration list!"
     exit 1
 fi
 
-# 3. Create the output directory if it doesn't exist
-mkdir -p "$OUTPUT_DIR"
+if [ -z "$OUTPUT_DIR" ]; then
+    echo "❌ Error: Output directory is not set!"
+    exit 1
+fi
 
-echo "🎵 Connecting to: $STREAM_URL"
+mkdir -p "$OUTPUT_DIR"
 echo "📂 Saving tracks directly to: $OUTPUT_DIR"
 
-# 4. Run streamripper with browser impersonation
-# -u masks the connection as a standard web browser to bypass the 403 block
-exec streamripper "$STREAM_URL" -d "$OUTPUT_DIR" -a -u "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+# 3. Loop through every URL and spawn a separate streamripper instance in the background
+for URL in "${STREAM_URLS[@]}"; do
+    echo "🎵 Starting recorder background process for: $URL"
+    
+    # We remove 'exec' so the script doesn't stop at the first item.
+    # The trailing '&' sends each streamripper task to run in the background.
+    streamripper "$URL" -d "$OUTPUT_DIR" -a &
+done
+
+# 4. Keep the main container alive so Home Assistant knows it is running
+# This waits on all background streams to finish. If they all die, the addon stops.
+wait
+
