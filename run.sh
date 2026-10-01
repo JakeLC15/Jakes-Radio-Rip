@@ -2,38 +2,43 @@
 set -e
 
 CONFIG_PATH="/data/options.json"
+STATUS_FILE="/media/DATA2/Music/jakes_station_rip/status.json"
 
-# 1. Read the base configuration options
 if [ -f "$CONFIG_PATH" ]; then
-    OUTPUT_DIR=$(jq --raw-output '.output_dir // "/media/stationripper"' "$CONFIG_PATH")
-    # Read the streams list into a bash array
+    BASE_OUTPUT_DIR=$(jq --raw-output '.output_dir // "/media/stationripper"' "$CONFIG_PATH")
     mapfile -t STREAM_URLS < <(jq --raw-output '.streams[] // empty' "$CONFIG_PATH")
 fi
 
-# 2. Safety checks
 if [ ${#STREAM_URLS[@]} -eq 0 ]; then
     echo "❌ Error: No URLs found in your 'streams' configuration list!"
     exit 1
 fi
 
-if [ -z "$OUTPUT_DIR" ]; then
-    echo "❌ Error: Output directory is not set!"
-    exit 1
-fi
+mkdir -p "$BASE_OUTPUT_DIR"
 
-mkdir -p "$OUTPUT_DIR"
-echo "📂 Saving tracks directly to: $OUTPUT_DIR"
+# Initialize the tracking JSON file
+echo "{}" > "$STATUS_FILE"
 
-# 3. Loop through every URL and spawn a separate streamripper instance in the background
 for URL in "${STREAM_URLS[@]}"; do
-    echo "🎵 Starting recorder background process for: $URL"
+    FOLDER_NAME=$(echo "$URL" | awk -F/ '{print $3}')
+    STREAM_DIR="${BASE_OUTPUT_DIR}/${FOLDER_NAME}"
     
-    # We remove 'exec' so the script doesn't stop at the first item.
-    # The trailing '&' sends each streamripper task to run in the background.
-    streamripper "$URL" -d "$OUTPUT_DIR" -a &
+    echo "🔍 Validating: $URL..."
+    
+    if curl -sLI --max-time 5 "$URL" -o /dev/null; then
+        mkdir -p "$STREAM_DIR"
+        echo "✅ Stream active! Saving to: $STREAM_DIR"
+        
+        # Log status as Online
+        jq --arg key "$FOLDER_NAME" --arg val "Online" '. + {($key): $val}' "$STATUS_FILE" > "${STATUS_FILE}.tmp" && mv "${STATUS_FILE}.tmp" "$STATUS_FILE"
+        
+        streamripper "$URL" -d "$STREAM_DIR" -a &
+    else
+        echo "❌ ERROR: Could not connect to stream: $URL"
+        # Log status as Offline
+        jq --arg key "$FOLDER_NAME" --arg val "Offline" '. + {($key): $val}' "$STATUS_FILE" > "${STATUS_FILE}.tmp" && mv "${STATUS_FILE}.tmp" "$STATUS_FILE"
+    fi
 done
 
-# 4. Keep the main container alive so Home Assistant knows it is running
-# This waits on all background streams to finish. If they all die, the addon stops.
 wait
 
