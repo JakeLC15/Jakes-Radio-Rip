@@ -19,12 +19,18 @@ RUN git clone --branch sripper-1_64_6 --depth 1 \
 
 WORKDIR /src/streamripper
 
+RUN echo "===== STREAMRIPPER SOURCE =====" \
+    && ls -la \
+    && echo "===== CMAKE FILE =====" \
+    && ls -l CMakeLists.txt \
+    && echo "===== GIT COMMIT =====" \
+    && git log -1 --oneline
+
 RUN cmake -S . -B build \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_INSTALL_PREFIX=/usr \
     && cmake --build build --parallel \
     && cmake --install build --prefix /install
-
 
 FROM debian:bookworm-slim
 
