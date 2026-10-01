@@ -2,13 +2,13 @@
 
 echo "========================================"
 echo "JAKE'S STATION RIPPER STARTING"
-echo "BUILD TEST: 2026-10-01-1"
+echo "BUILD TEST: 2026-10-01-2"
 echo "========================================"
 
 set -uo pipefail
 
-echo "Streamripper package:"
-dpkg-query -W -f='${Package} ${Version}\n' streamripper || true
+echo "Streamripper:"
+streamripper --version || true
 
 STATUS_FILE="/media/DATA2/Music/jakes_station_rip/status.json"
 STATUS_LOCK="/media/DATA2/Music/jakes_station_rip/status.lock"
@@ -54,62 +54,30 @@ for URL in "${STREAM_URLS[@]}"; do
 
         echo ""
         echo "========================================"
-        echo "TESTING STREAM:"
+        echo "STARTING:"
         echo "$URL"
         echo "========================================"
 
-        echo "=== STREAM REDIRECT TEST ==="
+        mkdir -p "$STREAM_DIR"
 
-        FINAL_URL=$(curl -k -sS -L \
-            --max-time 5 \
-            -o /dev/null \
-            -w '%{url_effective}' \
-            "$URL" 2>/dev/null)
-        
-        echo "Final URL:"
-        echo "$FINAL_URL"
-        
-        echo ""
-        echo "=== FINAL STREAM HEADERS ==="
-        
-        curl -k -sS \
-            -D - \
-            -o /dev/null \
-            --max-time 5 \
-            "$FINAL_URL" 2>&1 | head -40
-        
-        echo "============================"
+        echo "Starting Streamripper..."
 
-        for ((attempt=1; attempt<=MAX_RETRIES; attempt++)); do
-            echo "🔍 [Attempt $attempt/$MAX_RETRIES] Validating: $URL..."
+        update_status "$FOLDER_NAME" "Online"
 
-            if curl -fsS --max-time 5 "$URL" -o /dev/null; then
+        streamripper "$URL" \
+            -d "$STREAM_DIR" \
+            -a
 
-                mkdir -p "$STREAM_DIR"
+        RC=$?
 
-                echo "✅ Stream active! Saving to: $STREAM_DIR"
+        echo "Streamripper exited with code $RC"
 
-                update_status "$FOLDER_NAME" "Online"
-
-                streamripper "$URL" \
-                    -d "$STREAM_DIR" \
-                    -a
-
-                SUCCESS=true
-                break
-
-            else
-                echo "⚠️ Connection failed on attempt $attempt for: $URL"
-
-                if [ $attempt -lt $MAX_RETRIES ]; then
-                    echo "⏳ Waiting $RETRY_DELAY seconds before retrying..."
-                    sleep "$RETRY_DELAY"
-                fi
-            fi
-        done
+        if [ "$RC" -eq 0 ]; then
+            SUCCESS=true
+        fi
 
         if [ "$SUCCESS" = false ]; then
-            echo "❌ ERROR: Max retries reached. Stream is completely offline: $URL"
+            echo "❌ Streamripper failed for: $URL"
             update_status "$FOLDER_NAME" "Offline"
         fi
 
