@@ -23,7 +23,6 @@ for URL in "${STREAM_URLS[@]}"; do
     FOLDER_NAME=$(echo "$URL" | awk -F/ '{print $3}')
     STREAM_DIR="${BASE_OUTPUT_DIR}/${FOLDER_NAME}"
     
-    # Background loop for each stream to handle independent retries
     (
         SUCCESS=false
         for ((attempt=1; attempt<=MAX_RETRIES; attempt++)); do
@@ -33,11 +32,10 @@ for URL in "${STREAM_URLS[@]}"; do
                 mkdir -p "$STREAM_DIR"
                 echo "✅ Stream active! Saving to: $STREAM_DIR"
                 
-                # Mark as Online in status file
                 jq --arg key "$FOLDER_NAME" --arg val "Online" '. + {($key): $val}' "$STATUS_FILE" > "${STATUS_FILE}.tmp" && mv "${STATUS_FILE}.tmp" "$STATUS_FILE"
                 
-                # Launch streamripper (this process takes over the background thread)
-                streamripper "$URL" -d "$STREAM_DIR" -a
+                # Added the -q flag to turn off the continuous file size spam
+                streamripper "$URL" -d "$STREAM_DIR" -a -q
                 SUCCESS=true
                 break
             else
@@ -51,7 +49,6 @@ for URL in "${STREAM_URLS[@]}"; do
 
         if [ "$SUCCESS" = false ]; then
             echo "❌ ERROR: Max retries reached. Stream is completely offline: $URL"
-            # Mark as Offline in status file
             jq --arg key "$FOLDER_NAME" --arg val "Offline" '. + {($key): $val}' "$STATUS_FILE" > "${STATUS_FILE}.tmp" && mv "${STATUS_FILE}.tmp" "$STATUS_FILE"
         fi
     ) &
