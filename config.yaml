@@ -1,0 +1,14 @@
+name: "Jakes Station Rip Tool"
+description: "Rips internet radio streams into perfect, tagged MP3s using Streamripper."
+version: "1.0.0"
+slug: "jakesstationrip"
+arch:
+  - aarch64
+  - amd64
+  - armv7
+map:
+  - media:rw
+options:
+  stream_url: ""
+schema:
+  stream_url: str
