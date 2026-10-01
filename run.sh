@@ -45,6 +45,10 @@ update_status() {
     ) 200>"$STATUS_LOCK"
 }
 
+echo "=== STREAM HEADERS ==="
+curl -k -sS -D - -o /dev/null --max-time 5 "$URL" | head -30
+echo "======================"
+
 for URL in "${STREAM_URLS[@]}"; do
     FOLDER_NAME=$(echo "$URL" | awk -F/ '{print $3}')
     STREAM_DIR="${BASE_OUTPUT_DIR}/${FOLDER_NAME}"
@@ -66,7 +70,6 @@ for URL in "${STREAM_URLS[@]}"; do
                 streamripper "$URL" \
                     -d "$STREAM_DIR" \
                     -a \
-                    #--quiet
 
                 SUCCESS=true
                 break
