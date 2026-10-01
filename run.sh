@@ -58,9 +58,27 @@ for URL in "${STREAM_URLS[@]}"; do
         echo "$URL"
         echo "========================================"
 
-        echo "=== STREAM HEADERS ==="
-        curl -k -sS -D - -o /dev/null --max-time 5 "$URL" 2>&1 | head -30
-        echo "======================"
+        echo "=== STREAM REDIRECT TEST ==="
+
+        FINAL_URL=$(curl -k -sS -L \
+            --max-time 5 \
+            -o /dev/null \
+            -w '%{url_effective}' \
+            "$URL" 2>/dev/null)
+        
+        echo "Final URL:"
+        echo "$FINAL_URL"
+        
+        echo ""
+        echo "=== FINAL STREAM HEADERS ==="
+        
+        curl -k -sS \
+            -D - \
+            -o /dev/null \
+            --max-time 5 \
+            "$FINAL_URL" 2>&1 | head -40
+        
+        echo "============================"
 
         for ((attempt=1; attempt<=MAX_RETRIES; attempt++)); do
             echo "🔍 [Attempt $attempt/$MAX_RETRIES] Validating: $URL..."
