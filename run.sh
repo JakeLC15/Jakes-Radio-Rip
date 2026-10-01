@@ -1,6 +1,9 @@
 #!/bin/bash
 set -uo pipefail
 
+echo "Streamripper package:"
+dpkg-query -W -f='${Package} ${Version}\n' streamripper || true
+
 STATUS_FILE="/media/DATA2/Music/jakes_station_rip/status.json"
 STATUS_LOCK="/media/DATA2/Music/jakes_station_rip/status.lock"
 CONFIG_PATH="/data/options.json"
@@ -16,10 +19,6 @@ if [ ${#STREAM_URLS[@]} -eq 0 ]; then
     echo "❌ Error: No URLs found in your 'streams' configuration list!"
     exit 1
 fi
-
-echo "=== Streamripper version ==="
-streamripper --version
-echo "============================"
 
 mkdir -p "$BASE_OUTPUT_DIR"
 echo "{}" > "$STATUS_FILE"
