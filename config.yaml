@@ -1,6 +1,6 @@
 name: "Jakes Station Rip Tool"
-description: "Rips internet radio streams into perfect, tagged MP3s using Streamripper."
-version: "1.0.0"
+description: "Rips multiple internet radio streams simultaneously into perfect, tagged MP3s."
+version: "1.1.0"
 slug: "jakesstationrip"
 arch:
   - aarch64
@@ -9,6 +9,9 @@ arch:
 map:
   - media:rw
 options:
-  stream_url: ""
+  streams: []
+  output_dir: "/media/DATA2/Music/jakes_station_rip"
 schema:
-  stream_url: str
+  streams:
+    - str
+  output_dir: str
