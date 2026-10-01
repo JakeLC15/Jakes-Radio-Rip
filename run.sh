@@ -21,6 +21,6 @@ mkdir -p "$OUTPUT_DIR"
 echo "🎵 Connecting to: $STREAM_URL"
 echo "📂 Saving tracks directly to: $OUTPUT_DIR"
 
-# 4. Run streamripper (Removed the invalid --codeset option)
-# -a rips everything into individual tracks natively
-exec streamripper "$STREAM_URL" -d "$OUTPUT_DIR" -a
+# 4. Run streamripper with browser impersonation
+# -u masks the connection as a standard web browser to bypass the 403 block
+exec streamripper "$STREAM_URL" -d "$OUTPUT_DIR" -a -u "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
