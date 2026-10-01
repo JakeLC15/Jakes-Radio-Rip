@@ -46,7 +46,7 @@ for URL in "${STREAM_URLS[@]}"; do
         for ((attempt=1; attempt<=MAX_RETRIES; attempt++)); do
             echo "🔍 [Attempt $attempt/$MAX_RETRIES] Validating: $URL..."
 
-            if curl -kfsS --max-time 5 "$URL" -o /dev/null; then
+            if curl -fsS --max-time 5 "$URL" -o /dev/null; then
 
                 mkdir -p "$STREAM_DIR"
 
