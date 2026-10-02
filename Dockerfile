@@ -3,13 +3,11 @@
 # ==========================================
 FROM debian:bookworm-slim AS builder
 
-# Added autoconf and automake to compile system configuration scripts
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
+    cmake \
     build-essential \
     pkg-config \
-    autoconf \
-    automake \
     libglib2.0-dev \
     libmad0-dev \
     libogg-dev \
@@ -23,11 +21,12 @@ RUN git clone --depth 1 https://github.com/XelaRellum/streamripper.git /src/stre
 
 WORKDIR /src/streamripper
 
-# FIXED: Run the repository bootstrap script to generate the missing './configure' file
-RUN ./autogen.sh \
-    && ./configure --prefix=/install \
-    && make -j$(nproc) \
-    && make install
+# FIXED: Replaced standard autotools flags with the repository's native cmake building sequence
+RUN cmake -S . -B build \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/usr \
+    && cmake --build build --parallel \
+    && cmake --install build --prefix /install
 
 # ==========================================
 # STAGE 2: Lightweight Production Runtime Image
@@ -47,7 +46,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && update-ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /install/bin/streamripper /usr/bin/streamripper
+# Copy the compiled binary from the cmake installation folder
+COPY --from=builder /install/usr/bin/streamripper /usr/bin/streamripper
 
 COPY run.sh /run.sh
 RUN chmod +x /run.sh
