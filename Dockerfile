@@ -5,9 +5,10 @@ FROM debian:bookworm-slim AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
-    cmake \
     build-essential \
     pkg-config \
+    autoconf \
+    automake \
     libglib2.0-dev \
     libmad0-dev \
     libogg-dev \
@@ -21,12 +22,11 @@ RUN git clone --depth 1 https://github.com/XelaRellum/streamripper.git /src/stre
 
 WORKDIR /src/streamripper
 
-# FIXED: Replaced standard autotools flags with the repository's native cmake building sequence
-RUN cmake -S . -B build \
-        -DCMAKE_BUILD_TYPE=Release \
-        -DCMAKE_INSTALL_PREFIX=/usr \
-    && cmake --build build --parallel \
-    && cmake --install build --prefix /install
+# FIXED: Bootstrapping the autotools configuration matrix natively to generate './configure'
+RUN autoreconf -i \
+    && ./configure --prefix=/install \
+    && make -j$(nproc) \
+    && make install
 
 # ==========================================
 # STAGE 2: Lightweight Production Runtime Image
@@ -46,9 +46,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && update-ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy the compiled binary from the cmake installation folder
-COPY --from=builder /install/usr/bin/streamripper /usr/bin/streamripper
+# Copy the modern patched binary from the build staging container
+COPY --from=builder /install/bin/streamripper /usr/bin/streamripper
 
+# Mount execution entry script hooks
 COPY run.sh /run.sh
 RUN chmod +x /run.sh
 
