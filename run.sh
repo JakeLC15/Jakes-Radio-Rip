@@ -19,24 +19,37 @@ fi
 mkdir -p "$BASE_OUTPUT_DIR"
 echo "{}" > "$STATUS_FILE"
 
-for URL in "${STREAM_URLS[@]}"; do
-    # Extract domain name safely by wrapping the source string
-    FOLDER_NAME=$(echo "$URL" | awk -F/ '{print $3}')
-    STREAM_DIR="${BASE_OUTPUT_DIR}/${FOLDER_NAME}"
-    
+for RAW_URL in "${STREAM_URLS[@]}"; do
     (
+        # 1. Resolve Redirections: Run a pre-flight trace to catch the final destination stream URL
+        # -s (silent), -L (follow locations), -I (fetch headers only), grep catches the location, awk cleans it up
+        echo "🔍 Tracing redirection links for: $RAW_URL"
+        FINAL_URL=$(curl -sIL -o /dev/null -w "%{url_effective}" "$RAW_URL")
+        
+        # Fallback to the raw URL if curl returns empty strings
+        URL="${FINAL_URL:-$RAW_URL}"
+        
+        # 2. Convert Secure Strings: Standard streamripper does not support https:// protocol headers.
+        # If the stream got redirected to a secure path, we change 'https' back to 'http' so the binary can read it.
+        if [[ "$URL" =~ ^https:// ]]; then
+            echo "🔒 Secure stream detected. Rewriting to insecure http for streamripper compatibility..."
+            URL=$(echo "$URL" | sed 's/^https:/http:/')
+        fi
+
+        FOLDER_NAME=$(echo "$URL" | awk -F/ '{print $3}')
+        STREAM_DIR="${BASE_OUTPUT_DIR}/${FOLDER_NAME}"
+        
         SUCCESS=false
         for ((attempt=1; attempt<=MAX_RETRIES; attempt++)); do
-            echo "🔍 [Attempt $attempt/$MAX_RETRIES] Validating: $URL..."
+            echo "🔍 [Attempt $attempt/$MAX_RETRIES] Connecting directly to resolved target: $URL..."
             
-            # Wrap variables in double quotes to prevent the semicolon from splitting the shell command
             if curl -sLI --max-time 5 "$URL" -o /dev/null; then
                 mkdir -p "$STREAM_DIR"
-                echo "✅ Stream active! Saving to: $STREAM_DIR"
+                echo "✅ Target resolved and active! Saving files to: $STREAM_DIR"
                 
                 jq --arg key "$FOLDER_NAME" --arg val "Online" '. + {($key): $val}' "$STATUS_FILE" > "${STATUS_FILE}.tmp" && mv "${STATUS_FILE}.tmp" "$STATUS_FILE"
                 
-                # Executing streamripper with clean quiet string variables
+                # Hand off the final, verified destination URL path directly to the streamripper engine
                 streamripper "$URL" -d "$STREAM_DIR" -a -q
                 SUCCESS=true
                 break
@@ -50,7 +63,7 @@ for URL in "${STREAM_URLS[@]}"; do
         done
 
         if [ "$SUCCESS" = false ]; then
-            echo "❌ ERROR: Max retries reached. Stream offline: $URL"
+            echo "❌ ERROR: Max retries reached. Stream completely offline: $URL"
             jq --arg key "$FOLDER_NAME" --arg val "Offline" '. + {($key): $val}' "$STATUS_FILE" > "${STATUS_FILE}.tmp" && mv "${STATUS_FILE}.tmp" "$STATUS_FILE"
         fi
     ) &
