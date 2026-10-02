@@ -1,18 +1,8 @@
 #!/bin/bash
+set -e
 
-echo "========================================"
-echo "JAKE'S STATION RIPPER STARTING"
-echo "BUILD TEST: 2026-10-01-2"
-echo "========================================"
-
-set -uo pipefail
-
-echo "Streamripper:"
-streamripper --version || true
-
-STATUS_FILE="/media/DATA2/Music/jakes_station_rip/status.json"
-STATUS_LOCK="/media/DATA2/Music/jakes_station_rip/status.lock"
 CONFIG_PATH="/data/options.json"
+STATUS_FILE="/media/DATA2/Music/jakes_station_rip/status.json"
 MAX_RETRIES=5
 RETRY_DELAY=10
 
@@ -29,59 +19,40 @@ fi
 mkdir -p "$BASE_OUTPUT_DIR"
 echo "{}" > "$STATUS_FILE"
 
-update_status() {
-    local key="$1"
-    local value="$2"
-
-    (
-        flock 200
-
-        jq --arg key "$key" --arg val "$value" \
-            '. + {($key): $val}' \
-            "$STATUS_FILE" > "${STATUS_FILE}.tmp"
-
-        mv "${STATUS_FILE}.tmp" "$STATUS_FILE"
-
-    ) 200>"$STATUS_LOCK"
-}
-
 for URL in "${STREAM_URLS[@]}"; do
+    # Extract domain name safely by wrapping the source string
     FOLDER_NAME=$(echo "$URL" | awk -F/ '{print $3}')
     STREAM_DIR="${BASE_OUTPUT_DIR}/${FOLDER_NAME}"
-
+    
     (
         SUCCESS=false
-
-        echo ""
-        echo "========================================"
-        echo "STARTING:"
-        echo "$URL"
-        echo "========================================"
-
-        mkdir -p "$STREAM_DIR"
-
-        echo "Starting Streamripper..."
-
-        update_status "$FOLDER_NAME" "Online"
-
-        streamripper "$URL" \
-            -d "$STREAM_DIR" \
-            \ -a \
-            --quiet
-
-        RC=$?
-
-        echo "Streamripper exited with code $RC"
-
-        if [ "$RC" -eq 0 ]; then
-            SUCCESS=true
-        fi
+        for ((attempt=1; attempt<=MAX_RETRIES; attempt++)); do
+            echo "🔍 [Attempt $attempt/$MAX_RETRIES] Validating: $URL..."
+            
+            # Wrap variables in double quotes to prevent the semicolon from splitting the shell command
+            if curl -sLI --max-time 5 "$URL" -o /dev/null; then
+                mkdir -p "$STREAM_DIR"
+                echo "✅ Stream active! Saving to: $STREAM_DIR"
+                
+                jq --arg key "$FOLDER_NAME" --arg val "Online" '. + {($key): $val}' "$STATUS_FILE" > "${STATUS_FILE}.tmp" && mv "${STATUS_FILE}.tmp" "$STATUS_FILE"
+                
+                # Executing streamripper with clean quiet string variables
+                streamripper "$URL" -d "$STREAM_DIR" -a -q
+                SUCCESS=true
+                break
+            else
+                echo "⚠️ Connection failed on attempt $attempt for: $URL"
+                if [ $attempt -lt $MAX_RETRIES ]; then
+                    echo "⏳ Waiting $RETRY_DELAY seconds before retrying..."
+                    sleep $RETRY_DELAY
+                fi
+            fi
+        done
 
         if [ "$SUCCESS" = false ]; then
-            echo "❌ Streamripper failed for: $URL"
-            update_status "$FOLDER_NAME" "Offline"
+            echo "❌ ERROR: Max retries reached. Stream offline: $URL"
+            jq --arg key "$FOLDER_NAME" --arg val "Offline" '. + {($key): $val}' "$STATUS_FILE" > "${STATUS_FILE}.tmp" && mv "${STATUS_FILE}.tmp" "$STATUS_FILE"
         fi
-
     ) &
 done
 
