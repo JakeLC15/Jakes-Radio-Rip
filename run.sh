@@ -14,9 +14,6 @@ echo "========================================"
 
 CONFIG_PATH="/data/options.json"
 
-STATUS_FILE="/media/DATA2/Music/jakes_station_rip/status.json"
-STATUS_LOCK="/media/DATA2/Music/jakes_station_rip/status.lock"
-
 MAX_RETRIES=5
 RETRY_DELAY=10
 
@@ -36,7 +33,10 @@ if [ ${#STREAM_URLS[@]} -eq 0 ]; then
 fi
 
 mkdir -p "$BASE_OUTPUT_DIR"
-mkdir -p "$(dirname "$STATUS_FILE")"
+
+# Configured to look dynamically inside your custom folder option
+STATUS_FILE="${BASE_OUTPUT_DIR}/status.json"
+STATUS_LOCK="${BASE_OUTPUT_DIR}/status.lock"
 
 echo "{}" > "$STATUS_FILE"
 
@@ -95,11 +95,12 @@ for URL in "${STREAM_URLS[@]}"; do
 
             echo "Starting Streamripper..."
 
+            # FIXED: Added the --quiet flag here to remove standard progress log spam
             streamripper \
                 "$URL" \
                 -d "$STREAM_DIR" \
                 -a \
-                --no-ssl-verify
+                --quiet
 
             RC=$?
 
