@@ -16,7 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Clone the repository containing the specific SR_ERROR_PARSE_FAILURE bugfix
-RUN git clone --depth 1 https://github.com/src/streamripper
+RUN git clone --depth 1 https://github.com/XelaRellum/streamripper.git /src/streamripper
 
 WORKDIR /src/streamripper
 
