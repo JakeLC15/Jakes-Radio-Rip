@@ -1,14 +1,33 @@
 #!/bin/bash
-set -e
+
+echo "========================================"
+echo "JAKE'S STATION RIPPER STARTING"
+echo "BUILD TEST: 2026-10-02-1"
+echo "========================================"
+
+set -uo pipefail
+
+echo "Streamripper:"
+streamripper --version || true
+
+echo "========================================"
 
 CONFIG_PATH="/data/options.json"
+
 STATUS_FILE="/media/DATA2/Music/jakes_station_rip/status.json"
+STATUS_LOCK="/media/DATA2/Music/jakes_station_rip/status.lock"
+
 MAX_RETRIES=5
 RETRY_DELAY=10
 
 if [ -f "$CONFIG_PATH" ]; then
-    BASE_OUTPUT_DIR=$(jq --raw-output '.output_dir // "/media/stationripper"' "$CONFIG_PATH")
-    mapfile -t STREAM_URLS < <(jq --raw-output '.streams[] // empty' "$CONFIG_PATH")
+    BASE_OUTPUT_DIR=$(jq --raw-output \
+        '.output_dir // "/media/stationripper"' \
+        "$CONFIG_PATH")
+
+    mapfile -t STREAM_URLS < <(
+        jq --raw-output '.streams[] // empty' "$CONFIG_PATH"
+    )
 fi
 
 if [ ${#STREAM_URLS[@]} -eq 0 ]; then
@@ -17,52 +36,95 @@ if [ ${#STREAM_URLS[@]} -eq 0 ]; then
 fi
 
 mkdir -p "$BASE_OUTPUT_DIR"
+mkdir -p "$(dirname "$STATUS_FILE")"
+
 echo "{}" > "$STATUS_FILE"
+
 
 update_status() {
     local key="$1"
-    local val="$2"
-    local tmp_file="/tmp/status_${key}_$$.json"
-    
-    if [ -f "$STATUS_FILE" ]; then
-        jq --arg key "$key" --arg val "$val" '. + {($key): $val}' "$STATUS_FILE" > "$tmp_file" 2>/dev/null && mv "$tmp_file" "$STATUS_FILE"
-    fi
+    local value="$2"
+
+    (
+        flock 200
+
+        TMP_FILE="${STATUS_FILE}.$$"
+
+        if jq \
+            --arg key "$key" \
+            --arg val "$value" \
+            '. + {($key): $val}' \
+            "$STATUS_FILE" > "$TMP_FILE"
+        then
+            mv "$TMP_FILE" "$STATUS_FILE"
+        else
+            rm -f "$TMP_FILE"
+            echo "⚠️ Failed to update status for $key"
+        fi
+
+    ) 200>"$STATUS_LOCK"
 }
 
-# Print a single startup layout message
-echo "📂 StationRipper initialized. Monitoring ${#STREAM_URLS[@]} stream(s)..."
 
-for RAW_URL in "${STREAM_URLS[@]}"; do
+for URL in "${STREAM_URLS[@]}"; do
+
+    # Extract hostname for the directory name
+    FOLDER_NAME=$(echo "$URL" | awk -F/ '{print $3}')
+
+    # Fallback in case URL parsing produces nothing
+    if [ -z "$FOLDER_NAME" ]; then
+        FOLDER_NAME="stream"
+    fi
+
+    STREAM_DIR="${BASE_OUTPUT_DIR}/${FOLDER_NAME}"
+
     (
-        URL="$RAW_URL"
-        FOLDER_NAME=$(echo "$URL" | awk -F/ '{print $3}')
-        STREAM_DIR="${BASE_OUTPUT_DIR}/${FOLDER_NAME}"
-        
-        SUCCESS=false
+
         for ((attempt=1; attempt<=MAX_RETRIES; attempt++)); do
-            # curl validation check runs completely silently
-            if curl -sLI --max-time 5 "$URL" -o /dev/null; then
-                mkdir -p "$STREAM_DIR"
-                echo "🟢 Stream Active: $FOLDER_NAME -> Saving to subfolder"
-                
-                update_status "$FOLDER_NAME" "Online"
-                
-                # FIXED: Added >/dev/null 2>&1 to swallow standard terminal headers and banner text completely
-                streamripper "$URL" -d "$STREAM_DIR" -a -q >/dev/null 2>&1
-                SUCCESS=true
+
+            echo ""
+            echo "========================================"
+            echo "[$FOLDER_NAME] Attempt $attempt/$MAX_RETRIES"
+            echo "URL: $URL"
+            echo "Output: $STREAM_DIR"
+            echo "========================================"
+
+            mkdir -p "$STREAM_DIR"
+
+            update_status "$FOLDER_NAME" "Connecting"
+
+            echo "Starting Streamripper..."
+
+            streamripper \
+                "$URL" \
+                -d "$STREAM_DIR" \
+                -a \
+                --no-ssl-verify
+
+            RC=$?
+
+            echo "Streamripper exited with code: $RC"
+
+            if [ "$RC" -eq 0 ]; then
+                update_status "$FOLDER_NAME" "Offline"
                 break
-            else
-                if [ $attempt -lt $MAX_RETRIES ]; then
-                    sleep $RETRY_DELAY
-                fi
             fi
+
+            echo "⚠️ Streamripper failed for $FOLDER_NAME"
+
+            update_status "$FOLDER_NAME" "Offline"
+
+            if [ "$attempt" -lt "$MAX_RETRIES" ]; then
+                echo "⏳ Waiting $RETRY_DELAY seconds before retrying..."
+                sleep "$RETRY_DELAY"
+            fi
+
         done
 
-        if [ "$SUCCESS" = false ]; then
-            echo "🔴 Stream Offline: Connection failed for $FOLDER_NAME"
-            update_status "$FOLDER_NAME" "Offline"
-        fi
+        echo "❌ $FOLDER_NAME stopped after $MAX_RETRIES attempts"
+
     ) &
+
 done
 
 wait
