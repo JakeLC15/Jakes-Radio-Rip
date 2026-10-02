@@ -66,7 +66,8 @@ for URL in "${STREAM_URLS[@]}"; do
 
         streamripper "$URL" \
             -d "$STREAM_DIR" \
-            -a
+            -a \
+            --quiet
 
         RC=$?
 
