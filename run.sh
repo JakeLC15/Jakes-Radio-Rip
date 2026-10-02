@@ -19,51 +19,57 @@ fi
 mkdir -p "$BASE_OUTPUT_DIR"
 echo "{}" > "$STATUS_FILE"
 
+# Base port index to separate multiple streams on localhost
+LOCAL_PORT=9000
+
 for RAW_URL in "${STREAM_URLS[@]}"; do
     (
-        # 1. Resolve Redirections: Run a pre-flight trace to catch the final destination stream URL
-        # -s (silent), -L (follow locations), -I (fetch headers only), grep catches the location, awk cleans it up
-        echo "🔍 Tracing redirection links for: $RAW_URL"
-        FINAL_URL=$(curl -sIL -o /dev/null -w "%{url_effective}" "$RAW_URL")
-        
-        # Fallback to the raw URL if curl returns empty strings
-        URL="${FINAL_URL:-$RAW_URL}"
-        
-        # 2. Convert Secure Strings: Standard streamripper does not support https:// protocol headers.
-        # If the stream got redirected to a secure path, we change 'https' back to 'http' so the binary can read it.
-        if [[ "$URL" =~ ^https:// ]]; then
-            echo "🔒 Secure stream detected. Rewriting to insecure http for streamripper compatibility..."
-            URL=$(echo "$URL" | sed 's/^https:/http:/')
-        fi
-
-        FOLDER_NAME=$(echo "$URL" | awk -F/ '{print $3}')
+        FOLDER_NAME=$(echo "$RAW_URL" | awk -F/ '{print $3}')
         STREAM_DIR="${BASE_OUTPUT_DIR}/${FOLDER_NAME}"
+        mkdir -p "$STREAM_DIR"
         
+        PORT=$LOCAL_PORT
+        LOCAL_PORT=$((LOCAL_PORT + 1))
+
         SUCCESS=false
         for ((attempt=1; attempt<=MAX_RETRIES; attempt++)); do
-            echo "🔍 [Attempt $attempt/$MAX_RETRIES] Connecting directly to resolved target: $URL..."
+            echo "🔍 [Attempt $attempt/$MAX_RETRIES] Tracing redirected URL layout..."
             
-            if curl -sLI --max-time 5 "$URL" -o /dev/null; then
-                mkdir -p "$STREAM_DIR"
-                echo "✅ Target resolved and active! Saving files to: $STREAM_DIR"
+            if curl -sLI --max-time 5 "$RAW_URL" -o /dev/null; then
+                echo "✅ Connection verified! Building silent proxy server on port $PORT..."
                 
                 jq --arg key "$FOLDER_NAME" --arg val "Online" '. + {($key): $val}' "$STATUS_FILE" > "${STATUS_FILE}.tmp" && mv "${STATUS_FILE}.tmp" "$STATUS_FILE"
                 
-                # Hand off the final, verified destination URL path directly to the streamripper engine
-                streamripper "$URL" -d "$STREAM_DIR" -a -q
+                # 1. Establish the silent loopback relay proxy.
+                # Added >/dev/null 2>&1 to hide all netcat console logging entirely.
+                (
+                    while true; do
+                        echo -e "HTTP/1.0 200 OK\r\nContent-Type: audio/mpeg\r\nIcy-MetaData: 1\r\n\r\n" | nc -l -p "$PORT" -s 127.0.0.1 -w 5 >/dev/null 2>&1 || true
+                        curl -sL -H "Icy-MetaData: 1" "$RAW_URL" | nc 127.0.0.1 "$PORT" >/dev/null 2>&1 || true
+                        sleep 1
+                    done
+                ) &
+                PROXY_PID=$!
+                
+                sleep 1
+
+                # 2. Command streamripper to target the quiet local loopback address
+                streamripper "http://127.0.0.1:$PORT/" -d "$STREAM_DIR" -a -q
+                
                 SUCCESS=true
+                kill "$PROXY_PID" 2>/dev/null || true
                 break
             else
-                echo "⚠️ Connection failed on attempt $attempt for: $URL"
+                echo "⚠️ Connection failed on attempt $attempt for: $RAW_URL"
                 if [ $attempt -lt $MAX_RETRIES ]; then
-                    echo "⏳ Waiting $RETRY_DELAY seconds before retrying..."
+                    echo "⏳ Waiting $RETRY_DELAY seconds..."
                     sleep $RETRY_DELAY
                 fi
             fi
         done
 
         if [ "$SUCCESS" = false ]; then
-            echo "❌ ERROR: Max retries reached. Stream completely offline: $URL"
+            echo "❌ ERROR: Max retries reached. Stream completely offline: $RAW_URL"
             jq --arg key "$FOLDER_NAME" --arg val "Offline" '. + {($key): $val}' "$STATUS_FILE" > "${STATUS_FILE}.tmp" && mv "${STATUS_FILE}.tmp" "$STATUS_FILE"
         fi
     ) &
