@@ -19,7 +19,6 @@ fi
 mkdir -p "$BASE_OUTPUT_DIR"
 echo "{}" > "$STATUS_FILE"
 
-# Thread-safe function to handle concurrent dashboard text status updates
 update_status() {
     local key="$1"
     local val="$2"
@@ -30,39 +29,37 @@ update_status() {
     fi
 }
 
+# Print a single startup layout message
+echo "📂 StationRipper initialized. Monitoring ${#STREAM_URLS[@]} stream(s)..."
+
 for RAW_URL in "${STREAM_URLS[@]}"; do
     (
-        # Safely wrap variables in strict double quotes to pass paths cleanly
         URL="$RAW_URL"
         FOLDER_NAME=$(echo "$URL" | awk -F/ '{print $3}')
         STREAM_DIR="${BASE_OUTPUT_DIR}/${FOLDER_NAME}"
         
         SUCCESS=false
         for ((attempt=1; attempt<=MAX_RETRIES; attempt++)); do
-            echo "🔍 [Attempt $attempt/$MAX_RETRIES] Connecting directly to: $URL..."
-            
+            # curl validation check runs completely silently
             if curl -sLI --max-time 5 "$URL" -o /dev/null; then
                 mkdir -p "$STREAM_DIR"
-                echo "✅ Connection active! Saving tracks directly to subfolder: $STREAM_DIR"
+                echo "🟢 Stream Active: $FOLDER_NAME -> Saving to subfolder"
                 
                 update_status "$FOLDER_NAME" "Online"
                 
-                # Run streamripper directly connected to the web stream
-                # -a splits files natively, -q hides download speed logging spam
-                streamripper "$URL" -d "$STREAM_DIR" -a -q
+                # FIXED: Added >/dev/null 2>&1 to swallow standard terminal headers and banner text completely
+                streamripper "$URL" -d "$STREAM_DIR" -a -q >/dev/null 2>&1
                 SUCCESS=true
                 break
             else
-                echo "⚠️ Connection failed on attempt $attempt for: $URL"
                 if [ $attempt -lt $MAX_RETRIES ]; then
-                    echo "⏳ Waiting $RETRY_DELAY seconds..."
                     sleep $RETRY_DELAY
                 fi
             fi
         done
 
         if [ "$SUCCESS" = false ]; then
-            echo "❌ ERROR: Stream is offline or incompatible: $URL"
+            echo "🔴 Stream Offline: Connection failed for $FOLDER_NAME"
             update_status "$FOLDER_NAME" "Offline"
         fi
     ) &
