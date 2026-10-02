@@ -17,12 +17,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Paste the line here and remove the spaces:
-RUN git clone --depth 1 https://github.com/XelaRellum/streamripper.git /src/streamripper
+# Pull the precise semicolon path fix branch from the source tree
+RUN git clone --branch fix_colon_in_path --depth 1 https://github.com/XelaRellum/streamripper.git /src/streamripper
 
 WORKDIR /src/streamripper
 
-# FIXED: Bootstrapping the autotools configuration matrix natively to generate './configure'
+# Generate configuration script templates and compile natively
 RUN autoreconf -i \
     && ./configure --prefix=/install \
     && make -j$(nproc) \
@@ -46,7 +46,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && update-ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy the modern patched binary from the build staging container
+# Extract the newly compiled binary directly into production staging
 COPY --from=builder /install/bin/streamripper /usr/bin/streamripper
 
 # Mount execution entry script hooks
