@@ -133,6 +133,29 @@ for URL in "${STREAM_URLS[@]}"; do
     ) &
 done
 
+# --- POST DIRECTLY TO HOME ASSISTANT API WITH ERROR LOGGING ---
+post_to_ha() {
+    local entity_id="$1"
+    local state="$2"
+    local json_attributes="${3:-{}}"
+
+    if [ -n "${SUPERVISOR_TOKEN:-}" ]; then
+        # Send the payload and capture the HTTP response code
+        local response=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d "{\"state\": \"${state}\", \"attributes\": ${json_attributes}}" \
+            "http://supervisor/core/api/states/${entity_id}")
+            
+        # If the response isn't 200 (Success) or 201 (Created), print a log warning
+        if [ "$response" != "200" ] && [ "$response" != "201" ]; then
+            echo "⚠️ HA API Warning: Failed to sync $entity_id (HTTP Status: $response)"
+        fi
+    else
+        echo "⚠️ HA API Error: SUPERVISOR_TOKEN is missing. Check config.yaml permissions."
+    fi
+}
+
 # Foreground Event loop
 echo "🚀 Jake's Station Ripper listener active. Awaiting dashboard actions..."
 counter=0
