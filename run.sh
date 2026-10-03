@@ -109,7 +109,22 @@ for URL in "${STREAM_URLS[@]}"; do
             mkdir -p "$STREAM_DIR"
             update_status "$FOLDER_NAME" "Ripping"
 
-            streamripper "$URL" -d "$STREAM_DIR" -u "WinampMPEG/5.0" ${QUIET_FLAG:-}
+            # DYNAMIC LOGGING CONTROL:
+            # If logging is enabled, run normally.
+            # If disabled, pass --quiet AND redirect standard errors (stderr) to /dev/null.
+            if [ "$LOGGING_ENABLED" = "true" ]; then
+                streamripper \
+                    "$URL" \
+                    -d "$STREAM_DIR" \
+                    -u "WinampMPEG/5.0"
+            else
+                streamripper \
+                    "$URL" \
+                    -d "$STREAM_DIR" \
+                    -u "WinampMPEG/5.0" \
+                    --quiet 2>/dev/null
+            fi
+
             RC=$?
 
             update_status "$FOLDER_NAME" "Offline"
