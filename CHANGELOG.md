@@ -1,5 +1,8 @@
 # Changelog
 
+## 2026.10.03-7
+- **Added:** Refactor button styles and add refresh functionality
+
 ## 2026.10.03-6
 - **Added:** Refactored ingress handling to use a Python-based multi-threaded server for web requests.
 
