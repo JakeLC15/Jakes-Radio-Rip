@@ -114,16 +114,15 @@ class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
 
 class IngressHandler(BaseHTTPRequestHandler):
     def do_POST(self):
-        # FIXED: Use endswith to process the form action cleanly through the dynamic HA Ingress proxy path
-        if self.path.endswith("/cleanup"):
-            # Call your exact bash cleanup string natively
-            cmd = f"find '{BASE_OUTPUT_DIR}' -type f -name '*.mp3' | grep -E '\\([0-9]+\\)\\.mp3$' | tr '\\n' '\\0' | xargs -0 rm -f"
-            subprocess.run(cmd, shell=True)
-            
-            # Send 303 Redirect back to the exact proxy subpath the user came from
-            self.send_response(303)
-            self.send_header('Location', self.path.replace('/cleanup', ''))
-            self.end_headers()
+        # INGRESS FIX: Treat any POST request on this server as a cleanup trigger.
+        # This completely bypasses route/token stripping issues.
+        cmd = f"find '{BASE_OUTPUT_DIR}' -type f -name '*.mp3' | grep -E '\\([0-9]+\\)\\.mp3$' | tr '\\n' '\\0' | xargs -0 rm -f"
+        subprocess.run(cmd, shell=True)
+        
+        # Redirect the user right back to the exact dynamic Ingress path they started from
+        self.send_response(303)
+        self.send_header('Location', self.path)
+        self.end_headers()
 
     def do_GET(self):
         self.send_response(200)
@@ -151,7 +150,7 @@ class IngressHandler(BaseHTTPRequestHandler):
         if not station_rows:
             station_rows = "<li>No active streams found</li>"
 
-        # FIXED: Made the form action relative ("./cleanup") so it loops cleanly within Home Assistant Ingress
+        # INGRESS FIX: Form action removed entirely to naturally point to the active browser path
         html = f"""<!DOCTYPE html>
 <html>
 <head>
@@ -176,55 +175,7 @@ class IngressHandler(BaseHTTPRequestHandler):
         <h2>📊 Library Management</h2>
         <p>Total Tracks Ripped:</p>
         <div class="count">{current_count} tracks</div>
-        <form action="./cleanup" method="POST">
-            <button type="submit">🧹 Purge Numbered Duplicates</button>
-        </form>
-    </div>
-</body>
-</html>"""
-        self.wfile.write(html.encode('utf-8'))
-
-if __name__ == '__main__':
-    server = ThreadedHTTPServer(('0.0.0.0', 8099), IngressHandler)
-    server.serve_forever()
-EOF
-
-# Export environment paths to python sub-process scope
-export BASE_OUTPUT_DIR STATUS_FILE
-
-# Run the python server in the foreground to keep the container alive and clear background processes cleanly
-trap 'echo "Shutting down..."; kill $(jobs -p) 2>/dev/null; exit 0' SIGINT SIGTERM
-python3 /tmp/server.py
-
-        
-        if not station_rows:
-            station_rows = "<li>No active streams found</li>"
-
-        html = f"""<!DOCTYPE html>
-<html>
-<head>
-    <title>Jake's Station Ripper</title>
-    <style>
-        body {{ font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #111; color: #eee; padding: 20px; }}
-        .card {{ background: #222; padding: 20px; border-radius: 8px; max-width: 500px; margin-bottom: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }}
-        h2 {{ margin-top: 0; color: #03a9f4; }}
-        ul {{ list-style: none; padding: 0; }}
-        li {{ padding: 10px 0; border-bottom: 1px solid #333; display: flex; justify-content: space-between; }}
-        button {{ background: #ff9800; color: white; border: none; padding: 12px 20px; font-weight: bold; border-radius: 4px; cursor: pointer; width: 100%; font-size: 14px; }}
-        button:hover {{ background: #e68a00; }}
-        .count {{ font-size: 24px; font-weight: bold; color: #4caf50; margin: 10px 0; }}
-    </style>
-</head>
-<body>
-    <div class="card">
-        <h2>📻 Live Stream Status</h2>
-        <ul>{station_rows}</ul>
-    </div>
-    <div class="card">
-        <h2>📊 Library Management</h2>
-        <p>Total Tracks Ripped:</p>
-        <div class="count">{current_count} tracks</div>
-        <form action="cleanup" method="POST">
+        <form method="POST">
             <button type="submit">🧹 Purge Numbered Duplicates</button>
         </form>
     </div>
