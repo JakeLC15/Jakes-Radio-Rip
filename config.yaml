@@ -1,19 +1,26 @@
 name: "Jakes Station Rip Tool"
-description: "Rips multiple internet radio streams simultaneously into perfect, tagged MP3s."
-version: "1.3.2"
+description: "Rips multiple internet radio streams simultaneously into perfect, tagged MP3s using custom Streamripper forks"
+version: "2026.10.03-1"
 slug: "jakesstationrip"
+init: false
 arch:
   - aarch64
   - amd64
+  - armhf
   - armv7
+  - i386
+startup: "application"
+boot: "auto"
+homeassistant_api: true
+stdin: true
 map:
   - media:rw
 options:
-  streams: []
   output_dir: "/media/DATA2/Music/jakes_station_rip"
+  streams: []
   logging: false
 schema:
+  output_dir: str
   streams:
     - str
-  output_dir: str
   logging: bool
