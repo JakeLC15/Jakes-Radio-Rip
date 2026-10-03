@@ -12,6 +12,8 @@ arch:
 startup: "application"
 boot: "auto"
 ingress: true
+ingress_port: 8099
+webui: "http://[HOST]:[PORT:8099]/"
 panel: true
 stdin: true
 map:
