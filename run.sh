@@ -113,22 +113,7 @@ class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
     daemon_threads = True
 
 class IngressHandler(BaseHTTPRequestHandler):
-    def do_POST(self):
-        # INGRESS FIX: Treat any POST request on this server as a cleanup trigger.
-        # This completely bypasses route/token stripping issues.
-        cmd = f"find '{BASE_OUTPUT_DIR}' -type f -name '*.mp3' | grep -E '\\([0-9]+\\)\\.mp3$' | tr '\\n' '\\0' | xargs -0 rm -f"
-        subprocess.run(cmd, shell=True)
-        
-        # Redirect the user right back to the exact dynamic Ingress path they started from
-        self.send_response(303)
-        self.send_header('Location', self.path)
-        self.end_headers()
-
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header('Content-Type', 'text/html; charset=UTF-8')
-        self.end_headers()
-
+    def _render_page(self):
         # Gather real-time track tallies
         try:
             count_res = subprocess.run(f"find '{BASE_OUTPUT_DIR}' -type f -name '*.mp3' | wc -l", shell=True, capture_output=True, text=True)
@@ -150,8 +135,7 @@ class IngressHandler(BaseHTTPRequestHandler):
         if not station_rows:
             station_rows = "<li>No active streams found</li>"
 
-        # INGRESS FIX: Form action removed entirely to naturally point to the active browser path
-        html = f"""<!DOCTYPE html>
+        return f"""<!DOCTYPE html>
 <html>
 <head>
     <title>Jake's Station Ripper</title>
@@ -181,6 +165,27 @@ class IngressHandler(BaseHTTPRequestHandler):
     </div>
 </body>
 </html>"""
+
+    def do_POST(self):
+        # 1. Run the bash cleanup string natively
+        cmd = f"find '{BASE_OUTPUT_DIR}' -type f -name '*.mp3' | grep -E '\\([0-9]+\\)\\.mp3$' | tr '\\n' '\\0' | xargs -0 rm -f"
+        subprocess.run(cmd, shell=True)
+        
+        # 2. Return a direct 200 OK text response instead of redirecting
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/html; charset=UTF-8')
+        self.end_headers()
+        
+        # 3. Directly push the updated UI layout
+        html = self._render_page()
+        self.wfile.write(html.encode('utf-8'))
+
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/html; charset=UTF-8')
+        self.end_headers()
+        
+        html = self._render_page()
         self.wfile.write(html.encode('utf-8'))
 
 if __name__ == '__main__':
