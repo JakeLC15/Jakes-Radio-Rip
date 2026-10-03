@@ -38,7 +38,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libfaad2 \
     libogg0 \
     libvorbis0a \
-    netcat-openbsd \
+    python3 \
     && update-ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
