@@ -143,10 +143,12 @@ class IngressHandler(BaseHTTPRequestHandler):
         h2 {{ margin-top: 0; color: #03a9f4; }}
         ul {{ list-style: none; padding: 0; }}
         li {{ padding: 10px 0; border-bottom: 1px solid #333; display: flex; justify-content: space-between; }}
-        button {{ color: white; border: none; padding: 12px 20px; font-weight: bold; border-radius: 4px; cursor: pointer; width: 100%; font-size: 14px; margin-bottom: 10px; }}
+        button, .btn-link {{ display: block; text-align: center; text-decoration: none; color: white; border: none; padding: 12px 20px; font-weight: bold; border-radius: 4px; cursor: pointer; width: 100%; font-size: 14px; margin-bottom: 10px; box-sizing: border-box; }}
         .btn-refresh {{ background: #03a9f4; }}
         .btn-refresh:hover {{ background: #0288d1; }}
-        .btn-purge {{ background: #ff9800; margin-bottom: 0; }}
+        .btn-media {{ background: #4caf50; }}
+        .btn-media:hover {{ background: #43a047; }}
+        .btn-purge {{ background: #ff9800; margin-bottom: 0; width: 100%; }}
         .btn-purge:hover {{ background: #e68a00; }}
         .count {{ font-size: 24px; font-weight: bold; color: #4caf50; margin: 10px 0; }}
     </style>
@@ -162,6 +164,9 @@ class IngressHandler(BaseHTTPRequestHandler):
         <div class="count">{current_count} tracks</div>
         
         <button class="btn-refresh" onclick="window.location.reload();">🔄 Refresh Live Data</button>
+        
+        <!-- MEDIA DIRECTORY LINK -->
+        <a class="btn-media" href="/media-browser" target="_top">📁 Open Media Browser</a>
         
         <form method="POST">
             <button type="submit" class="btn-purge">🧹 Purge Numbered Duplicates</button>
