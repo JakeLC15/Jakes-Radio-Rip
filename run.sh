@@ -2,7 +2,7 @@
 
 echo "========================================"
 echo "JAKE'S STATION RIPPER STARTING"
-echo "BUILD TEST: 2026-10-03-2"
+echo "BUILD TEST: 2026-10-03-3"
 echo "========================================"
 
 set -uo pipefail
@@ -119,7 +119,7 @@ for URL in "${STREAM_URLS[@]}"; do
                     "$URL" \
                     -d "$STREAM_DIR" \
                     -u "WinampMPEG/5.0" \
-                    --quiet > /dev/null 2>&1
+                    --quiet
             fi
 
             RC=$?
