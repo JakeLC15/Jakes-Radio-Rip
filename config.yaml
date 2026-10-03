@@ -1,6 +1,6 @@
 name: "Jakes Station Rip Tool"
 description: "Rips multiple internet radio streams simultaneously into perfect, tagged MP3s using custom Streamripper forks"
-version: "2026.10.03-3"
+version: "2026.10.03-4"
 slug: "jakesstationrip"
 init: false
 arch:
