@@ -2,6 +2,7 @@
 
 ## 2026.10.03-7
 - **Added:** Refactor button styles and add refresh functionality
+- **Added:** Button to media folder to open output directory
 
 ## 2026.10.03-6
 - **Added:** Refactored ingress handling to use a Python-based multi-threaded server for web requests.
