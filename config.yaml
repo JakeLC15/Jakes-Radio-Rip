@@ -1,6 +1,6 @@
 name: "Jakes Station Rip Tool"
 description: "Rips multiple internet radio streams simultaneously into perfect, tagged MP3s using custom Streamripper forks"
-version: "2026.10.03-1"
+version: "2026.10.03-2"
 slug: "jakesstationrip"
 init: false
 arch:
@@ -12,6 +12,7 @@ arch:
 startup: "application"
 boot: "auto"
 homeassistant_api: true
+hassio_api: true
 stdin: true
 map:
   - media:rw
