@@ -95,10 +95,12 @@ for URL in "${STREAM_URLS[@]}"; do
 
             echo "Starting Streamripper..."
 
-            # FIXED: Added the --quiet flag here to remove standard progress log spam
+            # FIXED: Added user-agent masquerading and forced meta-interval mapping
             streamripper \
                 "$URL" \
                 -d "$STREAM_DIR" \
+                -u "WinampMPEG/5.0" \
+                -M 128000 \
                 -a \
                 --quiet
 
