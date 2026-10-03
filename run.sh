@@ -60,7 +60,7 @@ update_status() {
     (
         flock 200
         TMP_FILE="${STATUS_FILE}.$$"
-        if jq --arg key "$key" --arg val "$value" '. + {($key): $val}' "$STATUS_FILE" > "$TMP_FILE" then
+        if jq --arg key "$key" --arg val "$value" '. + {($key): $val}' "$STATUS_FILE" > "$TMP_FILE"; then
             mv "$TMP_FILE" "$STATUS_FILE"
             
             # Instantly push the entire status JSON string to your HA sensor!
