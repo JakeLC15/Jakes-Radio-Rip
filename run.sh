@@ -2,7 +2,7 @@
 
 echo "========================================"
 echo "JAKE'S STATION RIPPER STARTING"
-echo "BUILD TEST: 2026-10-03-3"
+echo "BUILD TEST: 2026-10-03-5"
 echo "========================================"
 
 set -uo pipefail
@@ -22,7 +22,7 @@ BASE_OUTPUT_DIR="/media/stationripper"
 if [ -f "$CONFIG_PATH" ]; then
     BASE_OUTPUT_DIR=$(jq --raw-output '.output_dir // "/media/stationripper"' "$CONFIG_PATH")
     
-    # NEW: Default the jq fallback parsing to false as well
+    # Read the frontend logging toggle option (defaults to false)
     LOGGING_ENABLED=$(jq --raw-output '.logging // false' "$CONFIG_PATH")
 
     mapfile -t STREAM_URLS < <(jq --raw-output '.streams[] // empty' "$CONFIG_PATH")
@@ -40,23 +40,7 @@ STATUS_LOCK="${BASE_OUTPUT_DIR}/status.lock"
 
 echo "{}" > "$STATUS_FILE"
 
-# --- NEW: POST DIRECTLY TO HOME ASSISTANT API ---
-post_to_ha() {
-    local entity_id="$1"
-    local state="$2"
-    local json_attributes="${3:-{}}"
-
-    # Home Assistant automatically provides SUPERVISOR_TOKEN and http://supervisor/core/api/
-    if [ -n "${SUPERVISOR_TOKEN:-}" ]; then
-        curl -s -X POST \
-            -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" \
-            -H "Content-Type: application/json" \
-            -d "{\"state\": \"${state}\", \"attributes\": ${json_attributes}}" \
-            "http://supervisor/core/api/states/${entity_id}" > /dev/null || true
-    fi
-}
-
-# --- UPDATED STATUS FUNCTION ---
+# --- STATUS FUNCTION ---
 update_status() {
     local key="$1"
     local value="$2"
@@ -65,10 +49,6 @@ update_status() {
         TMP_FILE="${STATUS_FILE}.$$"
         if jq --arg key "$key" --arg val "$value" '. + {($key): $val}' "$STATUS_FILE" > "$TMP_FILE"; then
             mv "$TMP_FILE" "$STATUS_FILE"
-            
-            # Instantly push the entire status JSON string to your HA sensor!
-            local full_json=$(cat "$STATUS_FILE" | jq -c '.')
-            post_to_ha "sensor.station_ripper_status" "${full_json}" '{"friendly_name": "Station Ripper Status"}'
         else
             rm -f "$TMP_FILE"
             echo "⚠️ Failed to update status for $key"
@@ -76,24 +56,12 @@ update_status() {
     ) 200>"$STATUS_LOCK"
 }
 
-# --- NEW: MUSIC FILE COUNTER FUNCTION ---
-update_music_count() {
-    # Count the tracks recursively inside the chosen path
-    local count=$(find "$BASE_OUTPUT_DIR" -type f -name "*.mp3" | wc -l | tr -d ' ')
-    
-    # Broadcast the numeric value straight to Home Assistant
-    post_to_ha "sensor.ripped_music_count" "$count" '{"friendly_name": "Ripped Music Count", "unit_of_measurement": "tracks"}'
-}
-
+# --- MANUAL REUSABLE PURGE FUNCTION ---
 run_duplicate_cleanup() {
     echo "🧹 Starting manual duplicate purge..."
     find "$BASE_OUTPUT_DIR" -type f -name "*.mp3" | grep -E "\([0-9]+\)\.mp3$" | tr '\n' '\0' | xargs -0 rm -f
     echo "✅ Duplicate purge complete!"
-    update_music_count # Recount immediately after a purge
 }
-
-# Run initial count on startup
-update_music_count
 
 # Background rip threads
 for URL in "${STREAM_URLS[@]}"; do
@@ -107,14 +75,15 @@ for URL in "${STREAM_URLS[@]}"; do
             mkdir -p "$STREAM_DIR"
             update_status "$FOLDER_NAME" "Ripping"
 
-            # STRICT EVALUATION: Ensure lowercase string matching works perfectly
+            # DYNAMIC LOGGING CONTROL:
+            # Respects user toggle state
             if [ "${LOGGING_ENABLED}" = "true" ]; then
                 streamripper \
                     "$URL" \
                     -d "$STREAM_DIR" \
                     -u "WinampMPEG/5.0"
             else
-                # Completely silences both stdout and stderr channels
+                # Completely silences stream metadata tracking
                 streamripper \
                     "$URL" \
                     -d "$STREAM_DIR" \
@@ -125,7 +94,6 @@ for URL in "${STREAM_URLS[@]}"; do
             RC=$?
 
             update_status "$FOLDER_NAME" "Offline"
-            update_music_count
 
             [ "$RC" -eq 0 ] && break
             sleep "$RETRY_DELAY"
@@ -133,54 +101,71 @@ for URL in "${STREAM_URLS[@]}"; do
     ) &
 done
 
-# --- POST DIRECTLY TO HOME ASSISTANT API WITH ERROR LOGGING ---
-post_to_ha() {
-    local entity_id="$1"
-    local state="$2"
-    local json_attributes="${3:-{}}"
-
-    if [ -n "${SUPERVISOR_TOKEN:-}" ]; then
-        # Capture both the HTTP code and the raw text response body
-        local tmp_out=$(mktemp)
-        local response=$(curl -s -w "%{http_code}" -o "$tmp_out" -X POST \
-            -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" \
-            -H "Content-Type: application/json" \
-            -d "{\"state\": \"${state}\", \"attributes\": ${json_attributes}}" \
-            "http://supervisor/core/api/states/${entity_id}")
-            
-        local body=$(cat "$tmp_out")
-        rm -f "$tmp_out"
-
-        if [ "$response" != "200" ] && [ "$response" != "201" ]; then
-            echo "⚠️ HA API Rejected Post: $entity_id | Status: $response | Response: $body"
-        else
-            echo "✅ Successfully synced entity state for: $entity_id"
-        fi
-    else
-        echo "⚠️ HA API Error: SUPERVISOR_TOKEN environment variable is blank."
+# --- INGRESS WEB SERVICE HANDLING ---
+handle_web_request() {
+    local request_file="$1"
+    
+    # Listen for browser button post actions
+    if grep -q "POST /cleanup" "$request_file"; then
+        run_duplicate_cleanup
+        echo -e "HTTP/1.1 303 See Other\r\nLocation: .\r\n\r\n"
+        return
     fi
+
+    # Calculate real-time counts and list arrays on hit execution
+    local current_count=$(find "$BASE_OUTPUT_DIR" -type f -name "*.mp3" | wc -l | tr -d ' ')
+    local station_rows=""
+    if [ -f "$STATUS_FILE" ]; then
+        station_rows=$(jq -r 'to_entries | .[] | "<li><strong>\(.key):</strong> <span>\(.value)</span></li>"' "$STATUS_FILE")
+    fi
+
+    cat <<EOF
+HTTP/1.1 200 OK
+Content-Type: text/html; charset=UTF-8
+Connection: close
+
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Jake's Station Ripper</title>
+    <style>
+        body { font-family: -apple-system, sans-serif; background: #111; color: #eee; padding: 20px; }
+        .card { background: #222; padding: 20px; border-radius: 8px; max-width: 500px; margin-bottom: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
+        h2 { margin-top: 0; color: #03a9f4; }
+        ul { list-style: none; padding: 0; }
+        li { padding: 10px 0; border-bottom: 1px solid #333; display: flex; justify-content: space-between; }
+        button { background: #ff9800; color: white; border: none; padding: 12px 20px; font-weight: bold; border-radius: 4px; cursor: pointer; width: 100%; font-size: 14px; }
+        button:hover { background: #e68a00; }
+        .count { font-size: 24px; font-weight: bold; color: #4caf50; margin: 10px 0; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h2>📻 Live Stream Status</h2>
+        <ul>
+            ${station_rows:-<li>No active streams found</li>}
+        </ul>
+    </div>
+    <div class="card">
+        <h2>📊 Library Management</h2>
+        <p>Total Tracks Ripped:</p>
+        <div class="count">${current_count} tracks</div>
+        <form action="cleanup" method="POST">
+            <button type="submit">🧹 Purge Numbered Duplicates</button>
+        </form>
+    </div>
+</body>
+</html>
+EOF
 }
 
-# Foreground Event loop
-echo "🚀 Jake's Station Ripper listener active. Awaiting dashboard actions..."
-counter=0
-trap 'echo "Stopping..."; kill $(jobs -p) 2>/dev/null; exit 0' SIGINT SIGTERM
+# --- FOREGROUND EVENT SERVICE CAPTURE LOOP ---
+echo "🚀 Ingress Web Management Dashboard running on port 8099..."
+trap 'kill $(jobs -p) 2>/dev/null; exit 0' SIGINT SIGTERM
 
+# Lightweight network mapping socket loop
 while true; do
-    if read -t 2 -r line; then
-        if [ "$line" = "run_cleanup" ]; then
-            run_duplicate_cleanup
-        fi
-    fi
-
-    # Every 10 minutes (300 cycles of 2-second timeouts), refresh file count sensor
-    case $counter in
-        300) update_music_count; counter=0 ;;
-        *)   counter=$((counter + 1)) ;;
-    esac
-
-    if [ $(jobs -r | wc -l) -eq 0 ]; then
-        echo "❌ All background radio streams have stopped working. Exiting Add-on."
-        exit 1
-    fi
+    TMP_REQ=$(mktemp)
+    nc -l -p 8099 > "$TMP_REQ" < <(handle_web_request "$TMP_REQ")
+    rm -f "$TMP_REQ"
 done
