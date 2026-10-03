@@ -145,8 +145,11 @@ class IngressHandler(BaseHTTPRequestHandler):
         h2 {{ margin-top: 0; color: #03a9f4; }}
         ul {{ list-style: none; padding: 0; }}
         li {{ padding: 10px 0; border-bottom: 1px solid #333; display: flex; justify-content: space-between; }}
-        button {{ background: #ff9800; color: white; border: none; padding: 12px 20px; font-weight: bold; border-radius: 4px; cursor: pointer; width: 100%; font-size: 14px; }}
-        button:hover {{ background: #e68a00; }}
+        button {{ color: white; border: none; padding: 12px 20px; font-weight: bold; border-radius: 4px; cursor: pointer; width: 100%; font-size: 14px; margin-bottom: 10px; }}
+        .btn-refresh {{ background: #03a9f4; }}
+        .btn-refresh:hover {{ background: #0288d1; }}
+        .btn-purge {{ background: #ff9800; margin-bottom: 0; }}
+        .btn-purge:hover {{ background: #e68a00; }}
         .count {{ font-size: 24px; font-weight: bold; color: #4caf50; margin: 10px 0; }}
     </style>
 </head>
@@ -159,24 +162,34 @@ class IngressHandler(BaseHTTPRequestHandler):
         <h2>📊 Library Management</h2>
         <p>Total Tracks Ripped:</p>
         <div class="count">{current_count} tracks</div>
+        
+        <!-- OPTION B: Manual interaction engine query button -->
+        <button class="btn-refresh" onclick="window.location.reload();">🔄 Refresh Live Data</button>
+        
         <form method="POST">
-            <button type="submit">🧹 Purge Numbered Duplicates</button>
+            <button type="submit" class="btn-purge">🧹 Purge Numbered Duplicates</button>
         </form>
     </div>
 </body>
 </html>"""
 
     def do_POST(self):
-        # 1. Run the bash cleanup string natively
+        try:
+            content_length = int(self.headers.get('Content-Length', 0))
+            if content_length > 0:
+                self.rfile.read(content_length)
+        except Exception:
+            pass
+
+        # Run the bash cleanup string natively
         cmd = f"find '{BASE_OUTPUT_DIR}' -type f -name '*.mp3' | grep -E '\\([0-9]+\\)\\.mp3$' | tr '\\n' '\\0' | xargs -0 rm -f"
         subprocess.run(cmd, shell=True)
         
-        # 2. Return a direct 200 OK text response instead of redirecting
+        # Return a direct 200 OK text response instead of redirecting
         self.send_response(200)
         self.send_header('Content-Type', 'text/html; charset=UTF-8')
         self.end_headers()
         
-        # 3. Directly push the updated UI layout
         html = self._render_page()
         self.wfile.write(html.encode('utf-8'))
 
@@ -192,6 +205,67 @@ if __name__ == '__main__':
     server = ThreadedHTTPServer(('0.0.0.0', 8099), IngressHandler)
     server.serve_forever()
 EOF
+
+echo "🚀 Starting Ingress Web UI engine on port 8099..."
+
+# Write a tiny Python handler engine on the fly that dynamically queries bash commands
+cat << 'EOF' > /tmp/server.py
+import os
+import subprocess
+import json
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from socketserver import ThreadingMixIn
+
+BASE_OUTPUT_DIR = os.environ.get("BASE_OUTPUT_DIR", "/media/stationripper")
+STATUS_FILE = os.environ.get("STATUS_FILE", f"{BASE_OUTPUT_DIR}/status.json")
+
+class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
+    """Handle requests in separate threads to stop connection lockups."""
+    daemon_threads = True
+
+class IngressHandler(BaseHTTPRequestHandler):
+    def _render_page(self):
+        # Gather real-time track tallies
+        try:
+            count_res = subprocess.run(f"find '{BASE_OUTPUT_DIR}' -type f -name '*.mp3' | wc -l", shell=True, capture_output=True, text=True)
+            current_count = count_res.stdout.strip()
+        except:
+            current_count = "0"
+
+        # Build station status listing rows
+        station_rows = ""
+        if os.path.exists(STATUS_FILE):
+            try:
+                with open(STATUS_FILE, 'r') as f:
+                    data = json.load(f)
+                for station, status in data.items():
+                    station_rows += f"<li><strong>{station}:</strong> <span>{status}</span></li>"
+            except:
+                pass
+        
+        if not station_rows:
+            station_rows = "<li>No active streams found</li>"
+
+        return f"""<!DOCTYPE html>
+<html>
+<head>
+    <title>Jake's Station Ripper</title>
+    <style>
+        body {{ font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #111; color: #eee; padding: 20px; }}
+        .card {{ background: #222; padding: 20px; border-radius: 8px; max-width: 500px; margin-bottom: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }}
+        h2 {{ margin-top: 0; color: #03a9f4; }}
+        ul {{ list-style: none; padding: 0; }}
+        li {{ padding: 10px 0; border-bottom: 1px solid #333; display: flex; justify-content: space-between; }}
+        button {{ background: #ff9800; color: white; border: none; padding: 12px 20px; font-weight: bold; border-radius: 4px; cursor: pointer; width: 100%; font-size: 14px; }}
+        button:hover {{ background: #e68a00; }}
+        .count {{ font-size: 24px; font-weight: bold; color: #4caf50; margin: 10px 0; }}
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h2>📻 Live Stream Status</h2>
+        <ul>{station_rows}</ul>
+    </div>
 
 # Export environment paths to python sub-process scope
 export BASE_OUTPUT_DIR STATUS_FILE
