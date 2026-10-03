@@ -142,15 +142,17 @@ class IngressHandler(BaseHTTPRequestHandler):
         h2 {{ margin-top: 0; color: #03a9f4; }}
         ul {{ list-style: none; padding: 0; }}
         li {{ padding: 10px 0; border-bottom: 1px solid #333; display: flex; justify-content: space-between; }}
-        /* COMPONENT FIX: Standardizes widths, paddings, and boxes across all interactive controls perfectly */
-        button {{ display: block; text-align: center; color: white; border: none; padding: 12px 20px; font-weight: bold; border-radius: 4px; cursor: pointer; width: 100%; font-size: 14px; margin-bottom: 10px; box-sizing: border-box; }}
+
+        button {{ display: block; text-align: center; color: white; border: none; padding: 12px 20px; font-weight: bold; border-radius: 4px; cursor: pointer; width: 100%; font-size: 14px; margin-bottom: 16px; box-sizing: border-box; }}
         .btn-refresh {{ background: #03a9f4; }}
         .btn-refresh:hover {{ background: #0288d1; }}
         .btn-media {{ background: #4caf50; }}
         .btn-media:hover {{ background: #43a047; }}
         .btn-purge {{ background: #ff9800; margin-bottom: 0; }}
         .btn-purge:hover {{ background: #e68a00; }}
-        .count {{ font-size: 24px; font-weight: bold; color: #4caf50; margin: 10px 0; }}
+        .count {{ font-size: 24px; font-weight: bold; color: #4caf50; margin: 10px 0 20px 0; }}
+
+        .form-container {{ display: block; margin-top: 16px; }}
     </style>
 </head>
 <body>
@@ -165,10 +167,9 @@ class IngressHandler(BaseHTTPRequestHandler):
         
         <button class="btn-refresh" onclick="window.location.reload();">🔄 Refresh Live Data</button>
         
-        <!-- COMPANION APP FIX: Standardized button tag + native history navigation to keep it inside the app frame -->
         <button class="btn-media" onclick="window.parent.history.pushState(null, '', '/media-browser'); window.parent.dispatchEvent(new PopStateEvent('popstate'));">📁 Open Media Browser</button>
         
-        <form method="POST">
+        <form method="POST" class="form-container">
             <button type="submit" class="btn-purge">🧹 Purge Numbered Duplicates</button>
         </form>
     </div>
