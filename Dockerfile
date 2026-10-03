@@ -11,10 +11,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libogg-dev \
     libvorbis-dev \
     ca-certificates \
-    bash \
-    jq \
-    curl \
-    netcat-openbsd \
     && rm -rf /var/lib/apt/lists/*
 
 RUN git clone --depth 1 \
@@ -42,6 +38,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libfaad2 \
     libogg0 \
     libvorbis0a \
+    netcat-openbsd \
     && update-ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
