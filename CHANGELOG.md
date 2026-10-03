@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026.10.03-5
+- **Added:** Direct Home Assistant Ingress. Creates webserver management.
+- **Fixed:** Removed `-o always` flag, handled natively.
+
 ## 2026.10.03-2
 - **Added:** Direct Home Assistant HTTP API integration to push track counts automatically.
 - **Added:** Front-end log suppression toggle option via `--quiet`.
