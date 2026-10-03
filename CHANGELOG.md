@@ -1,5 +1,8 @@
 # Changelog
 
+## 2026.10.03-6
+- **Added:** Refactored ingress handling to use a Python-based multi-threaded server for web requests.
+
 ## 2026.10.03-5
 - **Added:** Direct Home Assistant Ingress. Creates webserver management.
 - **Fixed:** Removed `-o always` flag, handled natively.
