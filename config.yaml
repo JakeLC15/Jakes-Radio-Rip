@@ -13,6 +13,8 @@ startup: "application"
 boot: "auto"
 ingress: true
 ingress_port: 8099
+panel_icon: "mdi:folder-music-outline"
+panel_title: "Jakes Station Ripper"
 webui: "http://[HOST]:[PORT:8099]/"
 panel: true
 stdin: true
