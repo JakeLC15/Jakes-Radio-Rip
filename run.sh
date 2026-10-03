@@ -101,7 +101,6 @@ for URL in "${STREAM_URLS[@]}"; do
                 -d "$STREAM_DIR" \
                 -u "WinampMPEG/5.0" \
                 -M 128000 \
-                -a \
                 --quiet
 
             RC=$?
