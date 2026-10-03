@@ -140,19 +140,24 @@ post_to_ha() {
     local json_attributes="${3:-{}}"
 
     if [ -n "${SUPERVISOR_TOKEN:-}" ]; then
-        # Send the payload and capture the HTTP response code
-        local response=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+        # Capture both the HTTP code and the raw text response body
+        local tmp_out=$(mktemp)
+        local response=$(curl -s -w "%{http_code}" -o "$tmp_out" -X POST \
             -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" \
             -H "Content-Type: application/json" \
             -d "{\"state\": \"${state}\", \"attributes\": ${json_attributes}}" \
             "http://supervisor/core/api/states/${entity_id}")
             
-        # If the response isn't 200 (Success) or 201 (Created), print a log warning
+        local body=$(cat "$tmp_out")
+        rm -f "$tmp_out"
+
         if [ "$response" != "200" ] && [ "$response" != "201" ]; then
-            echo "⚠️ HA API Warning: Failed to sync $entity_id (HTTP Status: $response)"
+            echo "⚠️ HA API Rejected Post: $entity_id | Status: $response | Response: $body"
+        else
+            echo "✅ Successfully synced entity state for: $entity_id"
         fi
     else
-        echo "⚠️ HA API Error: SUPERVISOR_TOKEN is missing. Check config.yaml permissions."
+        echo "⚠️ HA API Error: SUPERVISOR_TOKEN environment variable is blank."
     fi
 }
 
