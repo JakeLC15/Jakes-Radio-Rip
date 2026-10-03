@@ -21,7 +21,10 @@ BASE_OUTPUT_DIR="/media/stationripper"
 
 if [ -f "$CONFIG_PATH" ]; then
     BASE_OUTPUT_DIR=$(jq --raw-output '.output_dir // "/media/stationripper"' "$CONFIG_PATH")
-    LOGGING_ENABLED=$(jq --raw-output '.logging // true' "$CONFIG_PATH")
+    
+    # NEW: Default the jq fallback parsing to false as well
+    LOGGING_ENABLED=$(jq --raw-output '.logging // false' "$CONFIG_PATH")
+
     mapfile -t STREAM_URLS < <(jq --raw-output '.streams[] // empty' "$CONFIG_PATH")
 fi
 
@@ -89,11 +92,6 @@ run_duplicate_cleanup() {
     update_music_count # Recount immediately after a purge
 }
 
-QUIET_FLAG=""
-if [ "$LOGGING_ENABLED" != "true" ]; then
-    QUIET_FLAG="--quiet"
-fi
-
 # Run initial count on startup
 update_music_count
 
@@ -109,27 +107,24 @@ for URL in "${STREAM_URLS[@]}"; do
             mkdir -p "$STREAM_DIR"
             update_status "$FOLDER_NAME" "Ripping"
 
-            # DYNAMIC LOGGING CONTROL:
-            # If logging is enabled, run normally.
-            # If disabled, pass --quiet AND redirect standard errors (stderr) to /dev/null.
-            if [ "$LOGGING_ENABLED" = "true" ]; then
+            # STRICT EVALUATION: Ensure lowercase string matching works perfectly
+            if [ "${LOGGING_ENABLED}" = "true" ]; then
                 streamripper \
                     "$URL" \
                     -d "$STREAM_DIR" \
                     -u "WinampMPEG/5.0"
             else
+                # Completely silences both stdout and stderr channels
                 streamripper \
                     "$URL" \
                     -d "$STREAM_DIR" \
                     -u "WinampMPEG/5.0" \
-                    --quiet 2>/dev/null
+                    --quiet > /dev/null 2>&1
             fi
 
             RC=$?
 
             update_status "$FOLDER_NAME" "Offline"
-            
-            # Recount files since a track boundary was likely hit or stream disconnected
             update_music_count
 
             [ "$RC" -eq 0 ] && break
