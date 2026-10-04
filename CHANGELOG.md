@@ -3,6 +3,7 @@
 ## 2026.10.04-1
 - **Added:** Media button mapped to configured output directory.
 - **Fixed:** No longer saving .cue file.
+- **Added:** Multi-platform support.
 ## 2026.10.03-7
 - **Added:** Refactor button styles and add refresh functionality
 - **Added:** Button to media folder to open output directory
