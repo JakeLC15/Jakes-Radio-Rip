@@ -1,4 +1,4 @@
-FROM --platform=$BUILDPLATFORM debian:bookworm-slim AS builder
+FROM debian:bookworm-slim AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
@@ -18,8 +18,10 @@ RUN git clone --depth 1 \
     /src/streamripper
 
 WORKDIR /src/streamripper
- 
-RUN sed -i 's/char \*col = strchr (url_no_proto, \x27:\x27);/char *col = strchr(url_no_proto, \x27:\x27); char *first_slash = strchr(url_no_proto, \x27\/\x27); if (col \&\& first_slash \&\& col > first_slash) col = NULL;/g' lib/findopt.c
+
+ENV URL_PATCH='char *col = strchr(url_no_proto, '\'':'\''); char *first_slash = strchr(url_no_proto, '\''/'\''); if (col \&\& first_slash \&\& col > first_slash) col = NULL;'
+
+RUN sed -i "s|char \*col = strchr (url_no_proto, ':');|${URL_PATCH}|g" lib/findopt.c
 
 RUN cmake -S . -B build \
         -DCMAKE_BUILD_TYPE=Release \
@@ -27,7 +29,7 @@ RUN cmake -S . -B build \
     && cmake --build build -j"$(nproc)" \
     && strip build/streamripper
     
-FROM --platform=$TARGETPLATFORM debian:bookworm-slim
+FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     jq \
