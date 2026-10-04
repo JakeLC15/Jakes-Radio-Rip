@@ -1,3 +1,5 @@
+<img width="100" height="100" alt="Jakes_station_rip_icon" src="https://github.com/user-attachments/assets/9f8d8a25-618e-4aa5-8f6c-e110db827c32" /> 
+
 # Jake's Station Rip Tool
 
 ### This a lightweight Home Assistant Add-on that uses optimized background streams to rip multiple internet radio stations simultaneously.
@@ -33,9 +35,17 @@ https://github.com/JakeLC15/Jakes-Radio-Rip.git
 
 Jakes Station Rip Tool > Install > Start
 
+### Add this to configuration.yaml for media access:
+Remember to restart Home Assistant! 
+```
+homeassistant:
+  media_dirs:
+    local: /media
+```
+
 ## Example
 
-<img width="720" height="1600" alt="Screenshot_20261003-131746_Home Assistant" src="https://github.com/user-attachments/assets/83c82044-57c7-457a-acc5-fc0acafb7537" />
+<img width="600" height="1000" alt="Screenshot_20261004-095516_Home Assistant" src="https://github.com/user-attachments/assets/b1b20c37-486e-4f67-91d0-9535edc153fc" />
 
 
 >While this is a working addon, it is still a work in progress and features may be added and removed.
