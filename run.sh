@@ -2,7 +2,7 @@
 
 echo "========================================"
 echo "JAKE'S STATION RIPPER STARTING"
-echo "BUILD TEST: 2026-10-03-7"
+echo "BUILD TEST: 2026-10-04-1"
 echo "========================================"
 
 set -uo pipefail
@@ -76,13 +76,15 @@ for URL in "${STREAM_URLS[@]}"; do
                 streamripper \
                     "$URL" \
                     -d "$STREAM_DIR" \
-                    -u "WinampMPEG/5.0"
+                    -u "WinampMPEG/5.0" \
+                    --no-meta-bundle
             else
                 streamripper \
                     "$URL" \
                     -d "$STREAM_DIR" \
                     -u "WinampMPEG/5.0" \
-                    --quiet
+                    --quiet \
+                    --no-meta-bundle
             fi
 
             RC=$?
@@ -132,6 +134,11 @@ class IngressHandler(BaseHTTPRequestHandler):
         
         if not station_rows:
             station_rows = "<li>No active streams found</li>"
+
+        relative_path = BASE_OUTPUT_DIR.replace("/media/", "", 1)
+        url_encoded_path = relative_path.replace("/", "%2F")
+        target_media_url = f"/media-browser/browser/app,media-source:%2F%2Fmedia_source%2Flocal%2F{url_encoded_path}"
+
         return f"""<!DOCTYPE html>
 <html>
 <head>
@@ -142,7 +149,6 @@ class IngressHandler(BaseHTTPRequestHandler):
         h2 {{ margin-top: 0; color: #03a9f4; }}
         ul {{ list-style: none; padding: 0; }}
         li {{ padding: 10px 0; border-bottom: 1px solid #333; display: flex; justify-content: space-between; }}
-
         button {{ display: block; text-align: center; color: white; border: none; padding: 12px 20px; font-weight: bold; border-radius: 4px; cursor: pointer; width: 100%; font-size: 14px; margin-bottom: 16px; box-sizing: border-box; }}
         .btn-refresh {{ background: #03a9f4; }}
         .btn-refresh:hover {{ background: #0288d1; }}
@@ -151,7 +157,6 @@ class IngressHandler(BaseHTTPRequestHandler):
         .btn-purge {{ background: #ff9800; margin-bottom: 0; }}
         .btn-purge:hover {{ background: #e68a00; }}
         .count {{ font-size: 24px; font-weight: bold; color: #4caf50; margin: 10px 0 20px 0; }}
-
         .form-container {{ display: block; margin-top: 16px; }}
     </style>
 </head>
@@ -166,8 +171,8 @@ class IngressHandler(BaseHTTPRequestHandler):
         <div class="count">{current_count} tracks</div>
         
         <button class="btn-refresh" onclick="window.location.reload();">🔄 Refresh Live Data</button>
-        
-        <button class="btn-media" onclick="window.parent.history.pushState(null, '', '/media-browser'); window.parent.dispatchEvent(new PopStateEvent('popstate'));">📁 Open Media Browser</button>
+
+        <button class="btn-media" onclick="window.parent.history.pushState(null, '', '{target_media_url}'); window.parent.dispatchEvent(new PopStateEvent('popstate'));">📁 Open Media Browser</button>
         
         <form method="POST" class="form-container">
             <button type="submit" class="btn-purge">🧹 Purge Numbered Duplicates</button>
