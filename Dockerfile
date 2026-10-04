@@ -1,4 +1,4 @@
-FROM debian:bookworm-slim AS builder
+FROM --platform=$BUILDPLATFORM debian:bookworm-slim AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
@@ -24,9 +24,8 @@ RUN cmake -S . -B build \
         -DWITH_SSL=ON \
     && cmake --build build -j"$(nproc)" \
     && strip build/streamripper
-
-
-FROM debian:bookworm-slim
+    
+FROM --platform=$TARGETPLATFORM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     jq \
