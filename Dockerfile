@@ -19,7 +19,7 @@ RUN git clone --depth 1 \
 
 WORKDIR /src/streamripper
  
-RUN sed -i '/char \*col = strchr (url_no_proto, \x27:\x27);/a \    char *first_slash = strchr(url_no_proto, \x27/\x27);\n    if (col && first_slash && col > first_slash) col = NULL;' lib/findopt.c
+RUN sed -i 's/char \*col = strchr (url_no_proto, \x27:\x27);/char *col = strchr(url_no_proto, \x27:\x27); char *first_slash = strchr(url_no_proto, \x27\/\x27); if (col \&\& first_slash \&\& col > first_slash) col = NULL;/g' lib/findopt.c
 
 RUN cmake -S . -B build \
         -DCMAKE_BUILD_TYPE=Release \
