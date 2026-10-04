@@ -20,21 +20,32 @@ RUN git clone --depth 1 \
 
 WORKDIR /src/streamripper
 
-RUN python3 -c ' \
-import os; \
-target = "lib/http.c"; \
-if os.path.exists(target): \
-    with open(target, "r") as f: text = f.read(); \
-    old = "char *col = strchr (url_no_proto, \x27:\x27);"; \
-    new = "char *col = strchr (url_no_proto, \x27:\x27);\n    char *first_slash = strchr(url_no_proto, \x27/\x27);\n    if (col && first_slash && col > first_slash) col = NULL;"; \
-    if old in text: \
-        text = text.replace(old, new); \
-        with open(target, "w") as f: f.write(text); \
-        print("✅ lib/http.c successfully patched!"); \
-    else: \
-        print("⚠️ Target signature line not found!"); \
-else: \
-    print("❌ Critical: lib/http.c missing!"); exit(1);'
+RUN cat << 'EOF' > /tmp/http_patch.py
+import os
+
+target = "lib/http.c"
+if os.path.exists(target):
+    with open(target, "r") as f:
+        text = f.read()
+    
+    old_line = "char *col = strchr (url_no_proto, ':');"
+    new_line = """char *col = strchr (url_no_proto, ':');
+    char *first_slash = strchr(url_no_proto, '/');
+    if (col && first_slash && col > first_slash) col = NULL;"""
+    
+    if old_line in text:
+        text = text.replace(old_line, new_line)
+        with open(target, "w") as f:
+            f.write(text)
+        print("✅ lib/http.c successfully patched!")
+    else:
+        print("⚠️ Target signature line not found!")
+else:
+    print("❌ Critical: lib/http.c missing!")
+    exit(1)
+EOF
+
+RUN python3 /tmp/http_patch.py
 
 RUN cmake -S . -B build \
         -DCMAKE_BUILD_TYPE=Release \
