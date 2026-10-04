@@ -21,8 +21,7 @@ RUN git clone --depth 1 \
 WORKDIR /src/streamripper
 
 RUN cat << 'EOF' > /tmp/patch.py
-
-TARGET_FILE = "/src/streamripper/lib/findopt.c"
+TARGET_FILE = "/src/streamripper/src/lib/findopt.c"
 
 with open(TARGET_FILE, "r") as f:
     text = f.read()
