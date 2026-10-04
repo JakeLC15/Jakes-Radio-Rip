@@ -19,6 +19,19 @@ RUN git clone --depth 1 \
 
 WORKDIR /src/streamripper
 
+RUN cat << 'EOF' > /tmp/http_c_fix.patch
+--- lib/http.c
++++ lib/http.c
+@@ -34,3 +34,5 @@
+-    if (strchr(url, ':') != NULL) {
++    char *port_colon = strchr(url, ':');
++    char *first_slash = strchr(url, '/');
++    if (port_colon != NULL && (first_slash == NULL || port_colon < first_slash)) {
+ 	debug_printf ("Branch 1 (%s)\n", url);
+EOF
+
+RUN patch -p1 < /tmp/http_c_fix.patch || true
+
 RUN cmake -S . -B build \
         -DCMAKE_BUILD_TYPE=Release \
         -DWITH_SSL=ON \
