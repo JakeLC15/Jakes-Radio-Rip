@@ -19,19 +19,14 @@ RUN git clone --depth 1 \
 
 WORKDIR /src/streamripper
 
-RUN cat << 'EOF' > /tmp/url_parser.patch
---- lib/findopt.c
-+++ lib/findopt.c
-@@ -93,4 +93,6 @@
-     char *url_no_proto = strstr (url, "://");
-     char *col = strchr (url_no_proto, ':');
-+    char *first_slash = strchr(url_no_proto, '/');
-+    if (col && first_slash && col > first_slash) col = NULL;
-     char *path = strchr (url_no_proto, '/');
-     char *auth = strchr (url_no_proto, '@');
-EOF
+RUN echo 'with open("lib/findopt.c", "r") as f: text = f.read()' > /tmp/patch.py && \
+    echo 'old = "char *col = strchr (url_no_proto, \x27:\x27);"' >> /tmp/patch.py && \
+    echo 'new = "char *col = strchr (url_no_proto, \x27:\x27);\n    char *first_slash = strchr(url_no_proto, \x27/\x27);\n    if (col \&\& first_slash \&\& col > first_slash) col = NULL;"' >> /tmp/patch.py && \
+    echo 'text = text.replace(old, new)' >> /tmp/patch.py && \
+    echo 'with open("lib/findopt.c", "w") as f: f.write(text)' >> /tmp/patch.py && \
+    echo 'print("✅ Patch file configured")' >> /tmp/patch.py
 
-RUN patch -p0 < /tmp/url_parser.patch
+RUN python3 /tmp/patch.py
 
 RUN cmake -S . -B build \
         -DCMAKE_BUILD_TYPE=Release \
