@@ -19,9 +19,19 @@ RUN git clone --depth 1 \
 
 WORKDIR /src/streamripper
 
-ENV URL_PATCH='char *col = strchr(url_no_proto, '\'':'\''); char *first_slash = strchr(url_no_proto, '\''/'\''); if (col \&\& first_slash \&\& col > first_slash) col = NULL;'
+RUN cat << 'EOF' > /tmp/url_parser.patch
+--- lib/findopt.c
++++ lib/findopt.c
+@@ -93,4 +93,6 @@
+     char *url_no_proto = strstr (url, "://");
+     char *col = strchr (url_no_proto, ':');
++    char *first_slash = strchr(url_no_proto, '/');
++    if (col && first_slash && col > first_slash) col = NULL;
+     char *path = strchr (url_no_proto, '/');
+     char *auth = strchr (url_no_proto, '@');
+EOF
 
-RUN sed -i "s|char \*col = strchr (url_no_proto, ':');|${URL_PATCH}|g" lib/findopt.c
+RUN patch -p0 < /tmp/url_parser.patch
 
 RUN cmake -S . -B build \
         -DCMAKE_BUILD_TYPE=Release \
