@@ -18,6 +18,8 @@ RUN git clone --depth 1 \
     /src/streamripper
 
 WORKDIR /src/streamripper
+ 
+RUN sed -i 's/char \*col = strchr/char *col = NULL; if (!strstr(url, ":\/\/")) col = strchr/g' console/streamripper.c || true
 
 RUN cmake -S . -B build \
         -DCMAKE_BUILD_TYPE=Release \
