@@ -14,6 +14,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
+ADD "https://random.org" /tmp/skip_cache
+
 RUN git clone --depth 1 \
     https://github.com/qbus00/streamripper.git \
     /src/streamripper
@@ -21,34 +23,31 @@ RUN git clone --depth 1 \
 WORKDIR /src/streamripper
 
 RUN cat << 'EOF' > /tmp/patch.py
-import glob
 import os
 
-# Dynamic lookup finds findopt.c anywhere inside the /src/streamripper directory tree
-matches = glob.glob("/src/streamripper/**/findopt.c", recursive=True)
+TARGET_FILE = "lib/findopt.c"
 
-if not matches:
-    print("❌ Critical Error: findopt.c could not be found anywhere on disk!")
-    exit(1)
+if os.path.exists(TARGET_FILE):
+    print(f"🎯 Target verified at: {os.path.abspath(TARGET_FILE)}")
+    with open(TARGET_FILE, "r") as f:
+        text = f.read()
 
-TARGET_FILE = matches[0]
-print(f"🎯 Found streamripper file path target at: {TARGET_FILE}")
-
-with open(TARGET_FILE, "r") as f:
-    text = f.read()
-
-old_line = "char *col = strchr (url_no_proto, ':');"
-new_line = """char *col = strchr (url_no_proto, ':');
+    old_line = "char *col = strchr (url_no_proto, ':');"
+    new_line = """char *col = strchr (url_no_proto, ':');
     char *first_slash = strchr(url_no_proto, '/');
     if (col && first_slash && col > first_slash) col = NULL;"""
 
-if old_line in text:
-    text = text.replace(old_line, new_line)
-    with open(TARGET_FILE, "w") as f:
-        f.write(text)
-    print("✅ Streamripper URL parser successfully patched!")
+    if old_line in text:
+        text = text.replace(old_line, new_line)
+        with open(TARGET_FILE, "w") as f:
+            f.write(text)
+        print("✅ Streamripper URL parser successfully patched!")
+    else:
+        print("⚠️ Target line matching signature not found (It may have been modified or pre-patched)!")
 else:
-    print("⚠️ Target line matching signature not found (It may have been modified or pre-patched)!")
+    print("❌ Error: File lib/findopt.c does not exist in current workspace context!")
+    print(f"Current directory contains: {os.listdir('.')}")
+    exit(1)
 EOF
 
 RUN python3 /tmp/patch.py
