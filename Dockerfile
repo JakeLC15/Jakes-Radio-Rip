@@ -25,7 +25,7 @@ WORKDIR /src/streamripper
 RUN cat << 'EOF' > /tmp/patch.py
 import os
 
-TARGET_FILE = "lib/findopt.c"
+TARGET_FILE = "lib/lib/findopt.c"
 
 if os.path.exists(TARGET_FILE):
     print(f"🎯 Target verified at: {os.path.abspath(TARGET_FILE)}")
@@ -45,8 +45,7 @@ if os.path.exists(TARGET_FILE):
     else:
         print("⚠️ Target line matching signature not found (It may have been modified or pre-patched)!")
 else:
-    print("❌ Error: File lib/findopt.c does not exist in current workspace context!")
-    print(f"Current directory contains: {os.listdir('.')}")
+    print("❌ Error: File lib/lib/findopt.c does not exist in current workspace context!")
     exit(1)
 EOF
 
