@@ -77,14 +77,14 @@ for URL in "${STREAM_URLS[@]}"; do
                     "$URL" \
                     -d "$STREAM_DIR" \
                     -u "WinampMPEG/5.0" \
-                    --no-meta-bundle
+                    --xs_none
             else
                 streamripper \
                     "$URL" \
                     -d "$STREAM_DIR" \
                     -u "WinampMPEG/5.0" \
                     --quiet \
-                    --no-meta-bundle
+                    --xs_none
             fi
 
             RC=$?
