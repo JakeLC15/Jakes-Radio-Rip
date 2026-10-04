@@ -21,7 +21,10 @@ RUN git clone --depth 1 \
 WORKDIR /src/streamripper
 
 RUN cat << 'EOF' > /tmp/patch.py
-with open("lib/findopt.c", "r") as f:
+
+TARGET_FILE = "/src/streamripper/lib/findopt.c"
+
+with open(TARGET_FILE, "r") as f:
     text = f.read()
 
 old_line = "char *col = strchr (url_no_proto, ':');"
@@ -31,12 +34,9 @@ new_line = """char *col = strchr (url_no_proto, ':');
 
 if old_line in text:
     text = text.replace(old_line, new_line)
-    with open("lib/findopt.c", "w") as f:
+    with open(TARGET_FILE, "w") as f:
         f.write(text)
-    print(
-
-
-"✅ Streamripper URL parser successfully patched!")
+    print("✅ Streamripper URL parser successfully patched!")
 else:
     print("⚠️ Target line matching signature not found!")
 EOF
