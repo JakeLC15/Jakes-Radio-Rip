@@ -136,12 +136,12 @@ class IngressHandler(BaseHTTPRequestHandler):
             station_rows = "<li>No active streams found</li>"
 
         clean_sub_path = BASE_OUTPUT_DIR.replace("/media/", "", 1).strip("/")
-        double_encoded_path = clean_sub_path.replace("/", "%252F")
         
         if not clean_sub_path:
             target_media_url = "/media-browser/browser/app,media-source:%2F%2Fmedia_source%2Flocal%2F."
         else:
-            target_media_url = f"/media-browser/browser/app,media-source:%2F%2Fmedia_source%2Flocal%2F{double_encoded_path}"
+            url_safe_subfolders = clean_sub_path.replace("/", "%2F")
+            target_media_url = f"/media-browser/browser/app,media-source:%2F%2Fmedia_source%2Flocal%2F{url_safe_subfolders}"
 
         return f"""<!DOCTYPE html>
 <html>
