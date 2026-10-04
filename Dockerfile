@@ -14,42 +14,27 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-ADD "https://random.org" /tmp/skip_cache
-
 RUN git clone --depth 1 \
     https://github.com/qbus00/streamripper.git \
     /src/streamripper
 
 WORKDIR /src/streamripper
 
-RUN cat << 'EOF' > /tmp/patch.py
-import os
-
-TARGET_FILE = "lib/lib/findopt.c"
-
-if os.path.exists(TARGET_FILE):
-    print(f"🎯 Target verified at: {os.path.abspath(TARGET_FILE)}")
-    with open(TARGET_FILE, "r") as f:
-        text = f.read()
-
-    old_line = "char *col = strchr (url_no_proto, ':');"
-    new_line = """char *col = strchr (url_no_proto, ':');
-    char *first_slash = strchr(url_no_proto, '/');
-    if (col && first_slash && col > first_slash) col = NULL;"""
-
-    if old_line in text:
-        text = text.replace(old_line, new_line)
-        with open(TARGET_FILE, "w") as f:
-            f.write(text)
-        print("✅ Streamripper URL parser successfully patched!")
-    else:
-        print("⚠️ Target line matching signature not found (It may have been modified or pre-patched)!")
-else:
-    print("❌ Error: File lib/lib/findopt.c does not exist in current workspace context!")
-    exit(1)
-EOF
-
-RUN python3 /tmp/patch.py
+RUN python3 -c ' \
+import os; \
+target = "lib/http.c"; \
+if os.path.exists(target): \
+    with open(target, "r") as f: text = f.read(); \
+    old = "char *col = strchr (url_no_proto, \x27:\x27);"; \
+    new = "char *col = strchr (url_no_proto, \x27:\x27);\n    char *first_slash = strchr(url_no_proto, \x27/\x27);\n    if (col && first_slash && col > first_slash) col = NULL;"; \
+    if old in text: \
+        text = text.replace(old, new); \
+        with open(target, "w") as f: f.write(text); \
+        print("✅ lib/http.c successfully patched!"); \
+    else: \
+        print("⚠️ Target signature line not found!"); \
+else: \
+    print("❌ Critical: lib/http.c missing!"); exit(1);'
 
 RUN cmake -S . -B build \
         -DCMAKE_BUILD_TYPE=Release \
