@@ -10,6 +10,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libfaad-dev \
     libogg-dev \
     libvorbis-dev \
+    python3 \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
@@ -19,18 +20,17 @@ RUN git clone --depth 1 \
 
 WORKDIR /src/streamripper
 
-RUN cat << 'EOF' > /tmp/http_c_fix.patch
---- lib/http.c
-+++ lib/http.c
-@@ -34,3 +34,5 @@
--    if (strchr(url, ':') != NULL) {
-+    char *port_colon = strchr(url, ':');
-+    char *first_slash = strchr(url, '/');
-+    if (port_colon != NULL && (first_slash == NULL || port_colon < first_slash)) {
- 	debug_printf ("Branch 1 (%s)\n", url);
-EOF
-
-RUN patch -p1 < /tmp/http_c_fix.patch || true
+RUN python3 -c ' \
+import glob; \
+for path in glob.glob("**/*.c", recursive=True): \
+    with open(path, "r", errors="ignore") as f: text = f.read(); \
+    old_target = "if (strchr(url, \x27:\x27) != NULL) {"; \
+    old_target_alt = "if (strchr (url, \x27:\x27) != NULL) {"; \
+    new_logic = """char *p_col = strchr(url, \x27:\x27); \n    char *p_slash = strchr(url, \x27/\x27); \n    if (p_col != NULL && (p_slash == NULL || p_col < p_slash)) {"""; \
+    if old_target in text or old_target_alt in text: \
+        text = text.replace(old_target, new_logic).replace(old_target_alt, new_logic); \
+        with open(path, "w") as f: f.write(text); \
+        print(f"✅ Successfully patched URL handler in: {path}"); '
 
 RUN cmake -S . -B build \
         -DCMAKE_BUILD_TYPE=Release \
