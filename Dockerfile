@@ -21,7 +21,18 @@ RUN git clone --depth 1 \
 WORKDIR /src/streamripper
 
 RUN cat << 'EOF' > /tmp/patch.py
-TARGET_FILE = "/src/streamripper/src/lib/findopt.c"
+import glob
+import os
+
+# Dynamic lookup finds findopt.c anywhere inside the /src/streamripper directory tree
+matches = glob.glob("/src/streamripper/**/findopt.c", recursive=True)
+
+if not matches:
+    print("❌ Critical Error: findopt.c could not be found anywhere on disk!")
+    exit(1)
+
+TARGET_FILE = matches[0]
+print(f"🎯 Found streamripper file path target at: {TARGET_FILE}")
 
 with open(TARGET_FILE, "r") as f:
     text = f.read()
@@ -37,7 +48,7 @@ if old_line in text:
         f.write(text)
     print("✅ Streamripper URL parser successfully patched!")
 else:
-    print("⚠️ Target line matching signature not found!")
+    print("⚠️ Target line matching signature not found (It may have been modified or pre-patched)!")
 EOF
 
 RUN python3 /tmp/patch.py
