@@ -2,7 +2,7 @@
 
 echo "========================================"
 echo "JAKE'S STATION RIPPER STARTING"
-echo "BUILD TEST: 2026-10-04-1"
+echo "BUILD TEST: 2026-10-05-1"
 echo "========================================"
 
 set -uo pipefail
@@ -16,7 +16,7 @@ CONFIG_PATH="/data/options.json"
 MAX_RETRIES=5
 RETRY_DELAY=10
 
-LOGGING_ENABLED="false" 
+LOGGING_ENABLED="false"
 BASE_OUTPUT_DIR="/media/stationripper"
 
 if [ -f "$CONFIG_PATH" ]; then
@@ -36,6 +36,10 @@ STATUS_FILE="${BASE_OUTPUT_DIR}/status.json"
 STATUS_LOCK="${BASE_OUTPUT_DIR}/status.lock"
 
 echo "{}" > "$STATUS_FILE"
+
+# --- CLEAN OLD INCOMPLETE FILES AT STARTUP ---
+echo "🧹 Cleaning old incomplete files..."
+rm -f "${BASE_OUTPUT_DIR}"/*/incomplete/* 2>/dev/null
 
 # --- STATUS FUNCTION ---
 update_status() {
@@ -59,6 +63,10 @@ run_duplicate_cleanup() {
     find "$BASE_OUTPUT_DIR" -type f -name "*.mp3" | grep -E "\([0-9]+\)\.mp3$" | tr '\n' '\0' | xargs -0 rm -f
     echo "✅ Duplicate purge complete!"
 }
+
+# --- NEW: TRACK BACKGROUND PROCESSES ---
+RIPPER_PIDS=()
+PYTHON_PID=""
 
 # Background rip threads
 for URL in "${STREAM_URLS[@]}"; do
@@ -94,6 +102,9 @@ for URL in "${STREAM_URLS[@]}"; do
             sleep "$RETRY_DELAY"
         done
     ) &
+
+    # NEW: Save the background wrapper PID
+    RIPPER_PIDS+=("$!")
 done
 
 # --- PYTHON-BASED MULTI-THREADED INGRESS ENGINE ---
@@ -219,18 +230,32 @@ EOF
 # Export environment paths to python sub-process scope
 export BASE_OUTPUT_DIR STATUS_FILE
 
-# Shutdown and remove incomplete files
+# --- CHANGED: CLEAN SHUTDOWN ---
 shutdown_handler() {
     echo "Shutting down Jakes Station Ripper..."
-    
-    # 1. Kill background streams immediately so they release their locks
-    kill $(jobs -p) 2>/dev/null
-    
-    echo "Fast purging left-over incomplete files..."
-    # 2. Optimized sweep: Quickly match files using shallow depth wildcards 
-    # to avoid traversing your entire music library on exit
-    rm -f "${BASE_OUTPUT_DIR}"/*/incomplete/* 2>/dev/null
-    
+
+    # Stop Python server
+    if [ -n "$PYTHON_PID" ]; then
+        kill "$PYTHON_PID" 2>/dev/null || true
+    fi
+
+    # Stop all ripper wrapper processes
+    for PID in "${RIPPER_PIDS[@]}"; do
+        kill "$PID" 2>/dev/null || true
+    done
+
+    # Give children a moment to exit
+    sleep 1
+
+    # Force anything still running
+    if [ -n "$PYTHON_PID" ]; then
+        kill -9 "$PYTHON_PID" 2>/dev/null || true
+    fi
+
+    for PID in "${RIPPER_PIDS[@]}"; do
+        kill -9 "$PID" 2>/dev/null || true
+    done
+
     echo "Done. Safe exit."
     exit 0
 }
@@ -238,5 +263,11 @@ shutdown_handler() {
 # Register shutdown
 trap 'shutdown_handler' SIGINT SIGTERM
 
-# Run the python server in the foreground to keep the container alive and clear background processes cleanly
-python3 /tmp/server.py
+# Run the python server in the foreground to keep the container alive
+python3 /tmp/server.py &
+
+# NEW: Save Python PID
+PYTHON_PID=$!
+
+# Wait for Python server
+wait "$PYTHON_PID"
