@@ -2,7 +2,7 @@
 
 echo "========================================"
 echo "JAKE'S STATION RIPPER STARTING"
-echo "BUILD TEST: 2026-10-05-1"
+echo "BUILD TEST: 2026-10-05-2"
 echo "========================================"
 
 set -uo pipefail
@@ -34,6 +34,7 @@ mkdir -p "$BASE_OUTPUT_DIR"
 
 STATUS_FILE="${BASE_OUTPUT_DIR}/status.json"
 STATUS_LOCK="${BASE_OUTPUT_DIR}/status.lock"
+START_TIME=$(date +%s)
 
 echo "{}" > "$STATUS_FILE"
 
@@ -110,44 +111,156 @@ done
 # --- PYTHON-BASED MULTI-THREADED INGRESS ENGINE ---
 echo "🚀 Starting Ingress Web UI engine on port 8099..."
 
-# Write a tiny Python handler engine on the fly that dynamically queries bash commands
 cat << 'EOF' > /tmp/server.py
 import os
 import subprocess
 import json
+import time
+import shutil
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
 
 BASE_OUTPUT_DIR = os.environ.get("BASE_OUTPUT_DIR", "/media/stationripper")
 STATUS_FILE = os.environ.get("STATUS_FILE", f"{BASE_OUTPUT_DIR}/status.json")
+START_TIME = int(os.environ.get("START_TIME", time.time()))
 
 class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
-    """Handle requests in separate threads to stop connection lockups."""
     daemon_threads = True
 
 class IngressHandler(BaseHTTPRequestHandler):
+    def _get_files(self):
+        files = []
+        today = datetime.now().date()
+        today_count = 0
+
+        for root, dirs, names in os.walk(BASE_OUTPUT_DIR):
+            for name in names:
+                if not name.lower().endswith(".mp3"):
+                    continue
+
+                path = os.path.join(root, name)
+
+                try:
+                    mtime = os.path.getmtime(path)
+                    files.append((mtime, path))
+
+                    if datetime.fromtimestamp(mtime).date() == today:
+                        today_count += 1
+                except:
+                    pass
+
+        files.sort(reverse=True)
+        return files, today_count
+
+    def _format_size(self, size):
+        for unit in ["B", "KB", "MB", "GB", "TB"]:
+            if size < 1024:
+                return f"{size:.1f} {unit}"
+            size /= 1024
+        return f"{size:.1f} PB"
+
+    def _format_uptime(self):
+        seconds = max(0, int(time.time()) - START_TIME)
+        days, seconds = divmod(seconds, 86400)
+        hours, seconds = divmod(seconds, 3600)
+        minutes, seconds = divmod(seconds, 60)
+
+        if days:
+            return f"{days}d {hours}h {minutes}m"
+        if hours:
+            return f"{hours}h {minutes}m"
+        return f"{minutes}m {seconds}s"
+
     def _render_page(self):
+        files, today_count = self._get_files()
+
+        current_count = len(files)
+
         try:
-            count_res = subprocess.run(f"find '{BASE_OUTPUT_DIR}' -type f -name '*.mp3' | wc -l", shell=True, capture_output=True, text=True)
-            current_count = count_res.stdout.strip()
+            usage = shutil.disk_usage(BASE_OUTPUT_DIR)
+            disk_used = self._format_size(usage.used)
+            disk_free = self._format_size(usage.free)
+            disk_total = self._format_size(usage.total)
+            disk_percent = (usage.used / usage.total) * 100
         except:
-            current_count = "0"
+            disk_used = disk_free = disk_total = "Unknown"
+            disk_percent = 0
 
         station_rows = ""
+        reconnect_rows = ""
+
         if os.path.exists(STATUS_FILE):
             try:
                 with open(STATUS_FILE, 'r') as f:
                     data = json.load(f)
+
                 for station, status in data.items():
-                    station_rows += f"<li><strong>{station}:</strong> <span>{status}</span></li>"
+                    if isinstance(status, dict):
+                        state = status.get("status", "Unknown")
+                        reconnects = status.get("reconnects", 0)
+                        last_error = status.get("last_error", "")
+                    else:
+                        state = status
+                        reconnects = 0
+                        last_error = ""
+
+                    if state == "Ripping":
+                        indicator = "🟢"
+                    else:
+                        indicator = "🔴"
+
+                    station_rows += f"""
+                    <li>
+                        <span>{indicator} <strong>{station}</strong></span>
+                        <span>{state}</span>
+                    </li>
+                    """
+
+                    reconnect_text = f"{reconnects} reconnects"
+                    if last_error:
+                        reconnect_text += f" — {last_error}"
+
+                    reconnect_rows += f"""
+                    <li>
+                        <span><strong>{station}</strong></span>
+                        <span>{reconnect_text}</span>
+                    </li>
+                    """
             except:
                 pass
-        
+
         if not station_rows:
             station_rows = "<li>No active streams found</li>"
 
+        if not reconnect_rows:
+            reconnect_rows = "<li>No stream information available</li>"
+
+        current_song = "No tracks yet"
+
+        if files:
+            current_song = os.path.basename(files[0][1])
+            current_song = os.path.splitext(current_song)[0]
+
+        recent_rows = ""
+
+        for mtime, path in files[:10]:
+            name = os.path.splitext(os.path.basename(path))[0]
+            station = os.path.basename(os.path.dirname(path))
+            when = datetime.fromtimestamp(mtime).strftime("%H:%M:%S")
+
+            recent_rows += f"""
+            <li>
+                <span>{name}</span>
+                <small>{station} · {when}</small>
+            </li>
+            """
+
+        if not recent_rows:
+            recent_rows = "<li>No tracks yet</li>"
+
         clean_sub_path = BASE_OUTPUT_DIR.replace("/media/", "", 1).strip("/")
-        
+
         if not clean_sub_path:
             target_media_url = "/media-browser/browser/app,media-source:%2F%2Fmedia_source%2Flocal%2F."
         else:
@@ -158,12 +271,14 @@ class IngressHandler(BaseHTTPRequestHandler):
 <html>
 <head>
     <title>Jake's Station Ripper</title>
+    <meta http-equiv="refresh" content="10">
     <style>
         body {{ font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #111; color: #eee; padding: 20px; }}
-        .card {{ background: #222; padding: 20px; border-radius: 8px; max-width: 500px; margin-bottom: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }}
+        .card {{ background: #222; padding: 20px; border-radius: 8px; max-width: 650px; margin-bottom: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }}
         h2 {{ margin-top: 0; color: #03a9f4; }}
-        ul {{ list-style: none; padding: 0; }}
-        li {{ padding: 10px 0; border-bottom: 1px solid #333; display: flex; justify-content: space-between; }}
+        ul {{ list-style: none; padding: 0; margin-bottom: 0; }}
+        li {{ padding: 10px 0; border-bottom: 1px solid #333; display: flex; justify-content: space-between; gap: 15px; }}
+        li:last-child {{ border-bottom: none; }}
         button {{ display: block; text-align: center; color: white; border: none; padding: 12px 20px; font-weight: bold; border-radius: 4px; cursor: pointer; width: 100%; font-size: 14px; margin-bottom: 16px; box-sizing: border-box; }}
         .btn-refresh {{ background: #03a9f4; }}
         .btn-refresh:hover {{ background: #0288d1; }}
@@ -172,27 +287,87 @@ class IngressHandler(BaseHTTPRequestHandler):
         .btn-purge {{ background: #ff9800; margin-bottom: 0; }}
         .btn-purge:hover {{ background: #e68a00; }}
         .count {{ font-size: 24px; font-weight: bold; color: #4caf50; margin: 10px 0 20px 0; }}
+        .current {{ font-size: 20px; font-weight: bold; color: #fff; margin: 10px 0 20px 0; word-break: break-word; }}
+        .stats {{ display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }}
+        .stat {{ background: #191919; padding: 14px; border-radius: 6px; }}
+        .stat-value {{ font-size: 20px; font-weight: bold; margin-top: 5px; }}
+        small {{ color: #999; white-space: nowrap; }}
         .form-container {{ display: block; margin-top: 16px; }}
     </style>
 </head>
 <body>
+
     <div class="card">
         <h2>📻 Live Stream Status</h2>
         <ul>{station_rows}</ul>
     </div>
+
     <div class="card">
-        <h2>📊 Library Management</h2>
-        <p>Total Tracks Ripped:</p>
-        <div class="count">{current_count} tracks</div>
-        
+        <h2>🎵 Current Track</h2>
+        <div class="current">{current_song}</div>
+    </div>
+
+    <div class="card">
+        <h2>📊 Library</h2>
+
+        <div class="stats">
+            <div class="stat">
+                Total Tracks
+                <div class="stat-value">{current_count}</div>
+            </div>
+
+            <div class="stat">
+                Tracks Today
+                <div class="stat-value">{today_count}</div>
+            </div>
+
+            <div class="stat">
+                Disk Used
+                <div class="stat-value">{disk_used}</div>
+            </div>
+
+            <div class="stat">
+                Disk Free
+                <div class="stat-value">{disk_free}</div>
+            </div>
+
+            <div class="stat">
+                Disk Total
+                <div class="stat-value">{disk_total}</div>
+            </div>
+
+            <div class="stat">
+                Disk Usage
+                <div class="stat-value">{disk_percent:.1f}%</div>
+            </div>
+
+            <div class="stat">
+                Uptime
+                <div class="stat-value">{self._format_uptime()}</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>🔄 Connection History</h2>
+        <ul>{reconnect_rows}</ul>
+    </div>
+
+    <div class="card">
+        <h2>🕘 Recent Tracks</h2>
+        <ul>{recent_rows}</ul>
+    </div>
+
+    <div class="card">
         <button class="btn-refresh" onclick="window.location.reload();">🔄 Refresh Live Data</button>
-        
+
         <button class="btn-media" onclick="window.parent.history.pushState(null, '', '{target_media_url}'); window.parent.dispatchEvent(new PopStateEvent('popstate'));">📁 Open Media Browser</button>
-        
+
         <form method="POST" class="form-container">
             <button type="submit" class="btn-purge">🧹 Purge Numbered Duplicates</button>
         </form>
     </div>
+
 </body>
 </html>"""
 
@@ -206,21 +381,19 @@ class IngressHandler(BaseHTTPRequestHandler):
 
         cmd = f"find '{BASE_OUTPUT_DIR}' -type f -name '*.mp3' | grep -E '\\([0-9]+\\)\\.mp3$' | tr '\\n' '\\0' | xargs -0 rm -f"
         subprocess.run(cmd, shell=True)
-        
+
         self.send_response(200)
         self.send_header('Content-Type', 'text/html; charset=UTF-8')
         self.end_headers()
-        
-        html = self._render_page()
-        self.wfile.write(html.encode('utf-8'))
+
+        self.wfile.write(self._render_page().encode('utf-8'))
 
     def do_GET(self):
         self.send_response(200)
         self.send_header('Content-Type', 'text/html; charset=UTF-8')
         self.end_headers()
-        
-        html = self._render_page()
-        self.wfile.write(html.encode('utf-8'))
+
+        self.wfile.write(self._render_page().encode('utf-8'))
 
 if __name__ == '__main__':
     server = ThreadedHTTPServer(('0.0.0.0', 8099), IngressHandler)
@@ -228,7 +401,7 @@ if __name__ == '__main__':
 EOF
 
 # Export environment paths to python sub-process scope
-export BASE_OUTPUT_DIR STATUS_FILE
+export BASE_OUTPUT_DIR STATUS_FILE START_TIME
 
 # --- CHANGED: CLEAN SHUTDOWN ---
 shutdown_handler() {
