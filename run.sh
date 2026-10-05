@@ -219,9 +219,24 @@ EOF
 # Export environment paths to python sub-process scope
 export BASE_OUTPUT_DIR STATUS_FILE
 
-# --- REVISED CLEANUP ON STOP TRAP ---
-# When HA calls stop, this intercepts the signal, kills the processes, and flushes all files in subfolders named 'incomplete' 
-trap 'echo "Shutting down Jkes Station Ripper..."; kill $(jobs -p) 2>/dev/null; echo "Purging left-over incomplete files in $BASE_OUTPUT_DIR..."; find "$BASE_OUTPUT_DIR" -type d -name "incomplete" -exec find {} -type f -delete \; 2>/dev/null; echo "Done. Safe exit."; exit 0' SIGINT SIGTERM
+# Shutdown and remove incomplete files
+shutdown_handler() {
+    echo "Shutting down Jakes Station Ripper..."
+    
+    # 1. Kill background streams immediately so they release their locks
+    kill $(jobs -p) 2>/dev/null
+    
+    echo "Fast purging left-over incomplete files..."
+    # 2. Optimized sweep: Quickly match files using shallow depth wildcards 
+    # to avoid traversing your entire music library on exit
+    rm -f "${BASE_OUTPUT_DIR}"/*/incomplete/* 2>/dev/null
+    
+    echo "Done. Safe exit."
+    exit 0
+}
+
+# Register shutdown
+trap 'shutdown_handler' SIGINT SIGTERM
 
 # Run the python server in the foreground to keep the container alive and clear background processes cleanly
 python3 /tmp/server.py
