@@ -40,7 +40,7 @@ echo "{}" > "$STATUS_FILE"
 
 # --- CLEAN OLD INCOMPLETE FILES AT STARTUP ---
 echo "🧹 Cleaning old incomplete files..."
-rm -f "${BASE_OUTPUT_DIR}"/*/incomplete/* 2>/dev/null
+find "$BASE_OUTPUT_DIR" -type f -path "*/incomplete/*" -delete 2>/dev/null
 
 # --- STATUS FUNCTION ---
 update_status() {
