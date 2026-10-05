@@ -312,6 +312,127 @@ class IngressHandler(BaseHTTPRequestHandler):
         small {{ color: #999; white-space: nowrap; }}
         .form-container {{ display: block; margin-top: 16px; }}
     </style>
+    def _render_page(self):
+        files, today_count = self._get_files()
+
+        current_count = len(files)
+
+        try:
+            usage = shutil.disk_usage(BASE_OUTPUT_DIR)
+            disk_used = self._format_size(usage.used)
+            disk_free = self._format_size(usage.free)
+            disk_total = self._format_size(usage.total)
+            disk_percent = (usage.used / usage.total) * 100
+        except:
+            disk_used = disk_free = disk_total = "Unknown"
+            disk_percent = 0
+
+        station_rows = ""
+        reconnect_rows = ""
+
+        if os.path.exists(STATUS_FILE):
+            try:
+                with open(STATUS_FILE, 'r') as f:
+                    data = json.load(f)
+
+                for station, status in data.items():
+                    if isinstance(status, dict):
+                        state = status.get("status", "Unknown")
+                        reconnects = status.get("reconnects", 0)
+                        last_error = status.get("last_error", "")
+                    else:
+                        state = status
+                        reconnects = 0
+                        last_error = ""
+
+                    if state == "Ripping":
+                        indicator = "🟢"
+                    else:
+                        indicator = "🔴"
+
+                    station_rows += f"""
+                    <li>
+                        <span>{indicator} <strong>{station}</strong></span>
+                        <span>{state}</span>
+                    </li>
+                    """
+
+                    reconnect_text = f"{reconnects} reconnects"
+                    if last_error:
+                        reconnect_text += f" — {last_error}"
+
+                    reconnect_rows += f"""
+                    <li>
+                        <span><strong>{station}</strong></span>
+                        <span>{reconnect_text}</span>
+                    </li>
+                    """
+            except:
+                pass
+
+        if not station_rows:
+            station_rows = "<li>No active streams found</li>"
+
+        if not reconnect_rows:
+            reconnect_rows = "<li>No stream information available</li>"
+
+        current_song = "No tracks yet"
+
+        if files:
+            current_song = os.path.basename(files[0][1])
+            current_song = os.path.splitext(current_song)[0]
+
+        recent_rows = ""
+
+        for mtime, path in files[:10]:
+            name = os.path.splitext(os.path.basename(path))[0]
+            station = os.path.basename(os.path.dirname(path))
+            when = datetime.fromtimestamp(mtime).strftime("%H:%M:%S")
+
+            recent_rows += f"""
+            <li>
+                <span>{name}</span>
+                <small>{station} · {when}</small>
+            </li>
+            """
+
+        if not recent_rows:
+            recent_rows = "<li>No tracks yet</li>"
+
+        clean_sub_path = BASE_OUTPUT_DIR.replace("/media/", "", 1).strip("/")
+
+        if not clean_sub_path:
+            target_media_url = "/media-browser/browser/app,media-source:%2F%2Fmedia_source%2Flocal%2F."
+        else:
+            url_safe_subfolders = clean_sub_path.replace("/", "%2F")
+            target_media_url = f"/media-browser/browser/app,media-source:%2F%2Fmedia_source%2Flocal%2F{url_safe_subfolders}"
+
+        return f"""<!DOCTYPE html>
+<html style="background-color: #111;">
+<head>
+    <title>Jake's Station Ripper</title>
+    <style>
+        body {{ font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #111; color: #eee; padding: 20px; }}
+        .card {{ background: #222; padding: 20px; border-radius: 8px; max-width: 650px; margin-bottom: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }}
+        h2 {{ margin-top: 0; color: #03a9f4; }}
+        ul {{ list-style: none; padding: 0; margin-bottom: 0; }}
+        li {{ padding: 10px 0; border-bottom: 1px solid #333; display: flex; justify-content: space-between; gap: 15px; }}
+        li:last-child {{ border-bottom: none; }}
+        button {{ display: block; text-align: center; color: white; border: none; padding: 12px 20px; font-weight: bold; border-radius: 4px; cursor: pointer; width: 100%; font-size: 14px; margin-bottom: 16px; box-sizing: border-box; }}
+        .btn-refresh {{ background: #03a9f4; }}
+        .btn-refresh:hover {{ background: #0288d1; }}
+        .btn-media {{ background: #4caf50; }}
+        .btn-media:hover {{ background: #43a047; }}
+        .btn-purge {{ background: #ff9800; margin-bottom: 0; }}
+        .btn-purge:hover {{ background: #e68a00; }}
+        .count {{ font-size: 24px; font-weight: bold; color: #4caf50; margin: 10px 0 20px 0; }}
+        .current {{ font-size: 20px; font-weight: bold; color: #fff; margin: 10px 0 20px 0; word-break: break-word; }}
+        .stats {{ display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }}
+        .stat {{ background: #191919; padding: 14px; border-radius: 6px; }}
+        .stat-value {{ font-size: 20px; font-weight: bold; margin-top: 5px; }}
+        small {{ color: #999; white-space: nowrap; }}
+        .form-container {{ display: block; margin-top: 16px; }}
+    </style>
 </head>
 <body>
 
@@ -386,6 +507,19 @@ class IngressHandler(BaseHTTPRequestHandler):
         </form>
     </div>
 
+    <script>
+        setInterval(async () => {{
+            try {{
+                const res = await fetch(window.location.href);
+                const text = await res.text();
+                const parser = new DOMParser();
+                const doc = parser.parseFromString(text, 'text/html');
+                document.body.innerHTML = doc.body.innerHTML;
+            }} catch (e) {{
+                console.log("Background status sync failed", e);
+            }}
+        }}, 10000);
+    </script>
 </body>
 </html>"""
 
