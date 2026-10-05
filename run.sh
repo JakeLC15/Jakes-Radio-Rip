@@ -151,6 +151,8 @@ class IngressHandler(BaseHTTPRequestHandler):
         today_count = 0
 
         for root, dirs, names in os.walk(BASE_OUTPUT_DIR):
+            dirs[:] = [d for d in dirs if d.lower() != "incomplete"]
+        
             for name in names:
                 if not name.lower().endswith(".mp3"):
                     continue
