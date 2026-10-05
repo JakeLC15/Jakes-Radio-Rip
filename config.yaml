@@ -11,9 +11,11 @@ arch:
   - i386
 startup: "application"
 boot: "auto"
+url: "https://github.com/JakeLC15/Jakes-Radio-Rip"
 ingress: true
 ingress_port: 8099
 panel_title: "Jakes Station Ripper"
+panel_icon: mdi:folder-music-outline
 webui: "http://[HOST]:[PORT:8099]/"
 panel: true
 stdin: true
