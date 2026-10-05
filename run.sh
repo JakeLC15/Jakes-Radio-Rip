@@ -2,7 +2,7 @@
 
 echo "========================================"
 echo "JAKE'S STATION RIPPER STARTING"
-echo "BUILD TEST: 2026-10-05-2"
+echo "BUILD TEST: 2026-10-05-3"
 echo "========================================"
 
 set -uo pipefail
@@ -44,16 +44,24 @@ rm -f "${BASE_OUTPUT_DIR}"/*/incomplete/* 2>/dev/null
 
 # --- STATUS FUNCTION ---
 update_status() {
-    local key="$1"
-    local value="$2"
+    local station="$1"
+    local status="$2"
+    local reconnects="${3:-0}"
+    local error="${4:-}"
     (
         flock 200
         TMP_FILE="${STATUS_FILE}.$$"
-        if jq --arg key "$key" --arg val "$value" '. + {($key): $val}' "$STATUS_FILE" > "$TMP_FILE"; then
+        if jq \
+            --arg station "$station" \
+            --arg status "$status" \
+            --argjson reconnects "$reconnects" \
+            --arg error "$error" \
+            '. + {($station): {status: $status, reconnects: $reconnects, last_error: $error}}' \
+            "$STATUS_FILE" > "$TMP_FILE"; then
             mv "$TMP_FILE" "$STATUS_FILE"
         else
             rm -f "$TMP_FILE"
-            echo "⚠️ Failed to update status for $key"
+            echo "⚠️ Failed to update status for $station"
         fi
     ) 200>"$STATUS_LOCK"
 }
@@ -76,10 +84,12 @@ for URL in "${STREAM_URLS[@]}"; do
     STREAM_DIR="${BASE_OUTPUT_DIR}/${FOLDER_NAME}"
 
     (
+        RECONNECTS=0
+    
         for ((attempt=1; attempt<=MAX_RETRIES; attempt++)); do
             echo "Starting Streamripper for $FOLDER_NAME..."
             mkdir -p "$STREAM_DIR"
-            update_status "$FOLDER_NAME" "Ripping"
+            update_status "$FOLDER_NAME" "Ripping" "$RECONNECTS" ""
 
             if [ "${LOGGING_ENABLED}" = "true" ]; then
                 streamripper \
@@ -97,9 +107,15 @@ for URL in "${STREAM_URLS[@]}"; do
             fi
 
             RC=$?
-            update_status "$FOLDER_NAME" "Offline"
 
-            [ "$RC" -eq 0 ] && break
+            [ "$RC" -eq 0 ] && {
+                update_status "$FOLDER_NAME" "Offline" "$RECONNECTS" ""
+                break
+            }
+
+            RECONNECTS=$((RECONNECTS + 1))
+            update_status "$FOLDER_NAME" "Offline" "$RECONNECTS" "Streamripper exited with code $RC"
+
             sleep "$RETRY_DELAY"
         done
     ) &
