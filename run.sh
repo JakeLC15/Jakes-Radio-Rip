@@ -123,7 +123,21 @@ watch_completed_files() {
 
     declare -A PROCESSED_FILES
 
-    while IFS='|' read -r -d '' EVENT FILE; do
+    # Open a dedicated file descriptor (3) bound directly to the inotifywait event thread.
+    # This prevents Bash from isolating the while loop inside a locked child subshell.
+    exec 3< <(
+        inotifywait \
+            --monitor \
+            --quiet \
+            --recursive \
+            --event close_write \
+            --event moved_to \
+            --format '%e|%w%f%0' \
+            "$STREAM_DIR"
+    )
+
+    # Read continuously from the dedicated descriptor channel
+    while IFS='|' read -u 3 -r -d '' EVENT FILE; do
 
         # Only process MP3 files
         case "$FILE" in
@@ -141,20 +155,19 @@ watch_completed_files() {
                 ;;
         esac
 
-        # close_write and moved_to can both happen for the same file.
-        # Only process each pathname once.
+        # Only process each pathname once
         if [ "${PROCESSED_FILES["$FILE"]:-0}" = "1" ]; then
             continue
         fi
 
-        # File has finished being written/moved into place.
+        # File has finished being written/moved into place
         sleep 0.2
 
         [ -f "$FILE" ] || continue
 
         FILE_SIZE=$(stat -c%s "$FILE" 2>/dev/null || echo 0)
 
-        # Mark it processed regardless of size.
+        # Mark it processed regardless of size
         PROCESSED_FILES["$FILE"]=1
 
         if [ "$FILE_SIZE" -lt "$MIN_FILE_SIZE_BYTES" ]; then
@@ -168,16 +181,10 @@ watch_completed_files() {
             fi
         fi
 
-    done < <(
-        inotifywait \
-            --monitor \
-            --quiet \
-            --recursive \
-            --format '%e|%w%f\0' \
-            --event close_write \
-            --event moved_to \
-            "$STREAM_DIR"
-    )
+    done
+
+    # Clean close the open stream handle if the loop terminates
+    exec 3<&-
 }
 
 # Track Background
