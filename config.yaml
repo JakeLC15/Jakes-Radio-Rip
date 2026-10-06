@@ -1,6 +1,6 @@
 name: "Jakes Station Rip Tool"
 description: "Rips multiple internet radio streams simultaneously into perfect, tagged MP3s using custom Streamripper forks"
-version: "2026.10.04-1"
+version: "2026.10.06-1"
 slug: "jakesstationrip"
 init: false
 arch:
@@ -23,12 +23,12 @@ options:
   output_dir: "/media/music/jakes_station_rip"
   streams: []
   logging: false
-  min_file_size_mb: 1
+  min_file_size_mb: 1.0
   continuous_recording: false
 schema:
   output_dir: str
   streams:
     - str
   logging: bool
-  min_file_size_mb: int(1,)
+  min_file_size_mb: float
   continuous_recording: bool
