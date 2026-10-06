@@ -171,7 +171,6 @@ watch_completed_files() {
             --quiet \
             --recursive \
             --format '%e|%w%f\0' \
-            --format0 \
             --event close_write \
             --event moved_to \
             "$STREAM_DIR"
