@@ -38,8 +38,10 @@ mkdir -p "$BASE_OUTPUT_DIR"
 STATUS_FILE="${BASE_OUTPUT_DIR}/status.json"
 STATUS_LOCK="${BASE_OUTPUT_DIR}/status.lock"
 START_TIME=$(date +%s)
-MIN_FILE_SIZE_BYTES=$(awk "BEGIN {printf \"%d\", $MIN_FILE_SIZE_MB * 1024 * 1024}")
-
+#MIN_FILE_SIZE_BYTES=$(awk "BEGIN {printf \"%d\", $MIN_FILE_SIZE_MB * 1024 * 1024}")
+MIN_FILE_SIZE_BYTES=$(awk -v mb="$MIN_FILE_SIZE_MB" \
+    'BEGIN { printf "%.0f", mb * 1024 * 1024 }')
+    
 echo "Minimum retained MP3 size: ${MIN_FILE_SIZE_MB} MB"
 echo "{}" > "$STATUS_FILE"
 
@@ -112,6 +114,70 @@ increment_ads_removed() {
     ) 200>"$ADS_REMOVED_LOCK"
 }
 
+# Watch for completed MP3 files without repeatedly scanning directories
+watch_completed_files() {
+    echo "👀 Watching $STREAM_DIR for completed MP3 files..."
+
+    declare -A PROCESSED_FILES
+
+    while IFS='|' read -r -d '' EVENT FILE; do
+
+        # Only process MP3 files
+        case "$FILE" in
+            *.mp3|*.MP3)
+                ;;
+            *)
+                continue
+                ;;
+        esac
+
+        # Never process Streamripper's incomplete directory
+        case "$FILE" in
+            */incomplete/*)
+                continue
+                ;;
+        esac
+
+        # close_write and moved_to can both happen for the same file.
+        # Only process each pathname once.
+        if [ "${PROCESSED_FILES["$FILE"]:-0}" = "1" ]; then
+            continue
+        fi
+
+        # File has finished being written/moved into place.
+        sleep 0.2
+
+        [ -f "$FILE" ] || continue
+
+        FILE_SIZE=$(stat -c%s "$FILE" 2>/dev/null || echo 0)
+
+        # Mark it processed regardless of size.
+        PROCESSED_FILES["$FILE"]=1
+
+        if [ "$FILE_SIZE" -lt "$MIN_FILE_SIZE_BYTES" ]; then
+            FILE_NAME=$(basename "$FILE")
+
+            echo "🧹 Removing small MP3: $FILE_NAME (${FILE_SIZE} bytes)"
+
+            if rm -f -- "$FILE"; then
+                increment_ads_removed 1
+                echo "🗑️ Removed: $FILE_NAME"
+            fi
+        fi
+
+    done < <(
+        inotifywait \
+            --monitor \
+            --quiet \
+            --recursive \
+            --format '%e|%w%f\0' \
+            --format0 \
+            --event close_write \
+            --event moved_to \
+            "$STREAM_DIR"
+    )
+}
+
 # Track Background
 RIPPER_PIDS=()
 PYTHON_PID=""
@@ -153,28 +219,22 @@ for URL in "${STREAM_URLS[@]}"; do
             if [ "${LOGGING_ENABLED}" != "true" ]; then
                 RIPPER_ARGS+=(--quiet)
             fi
+
+           CLEANUP_PID=""
+
+            if [ "${CONTINUOUS_RECORDING}" != "true" ]; then
+                watch_completed_files &
+                CLEANUP_PID=$!
+            fi
             
             streamripper "${RIPPER_ARGS[@]}"
-
-            RC=$?
-
-            AD_REMOVED=0
-
-            while IFS= read -r -d '' FILE; do
-                rm -f "$FILE"
-                AD_REMOVED=$((AD_REMOVED + 1))
-            done < <(
-                find "$STREAM_DIR" \
-                    -type f \
-                    -name "*.mp3" \
-                    -not -path "*/incomplete/*" \
-                    -size "-${MIN_FILE_SIZE_BYTES}c" \
-                    -print0 2>/dev/null
-            )
             
-            if [ "$AD_REMOVED" -gt 0 ]; then
-                increment_ads_removed "$AD_REMOVED"
-                echo "🧹 Removed $AD_REMOVED small MP3 file(s) from $FOLDER_NAME"
+            RC=$?
+            
+            # Stop the file watcher after Streamripper exits
+            if [ -n "$CLEANUP_PID" ]; then
+                kill "$CLEANUP_PID" 2>/dev/null || true
+                wait "$CLEANUP_PID" 2>/dev/null || true
             fi
 
             [ "$RC" -eq 0 ] && {
@@ -215,7 +275,7 @@ ADS_REMOVED_FILE = os.environ.get(
     f"{BASE_OUTPUT_DIR}/ads_removed.json"
 )
 
-MIN_FILE_SIZE_MB = int(os.environ.get("MIN_FILE_SIZE_MB", "1"))
+MIN_FILE_SIZE_MB = float(os.environ.get("MIN_FILE_SIZE_MB", "1"))
 
 class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
     daemon_threads = True
