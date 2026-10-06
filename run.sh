@@ -48,6 +48,9 @@ echo "{}" > "$STATUS_FILE"
 ADS_REMOVED_FILE="${BASE_OUTPUT_DIR}/ads_removed.json"
 ADS_REMOVED_LOCK="${BASE_OUTPUT_DIR}/ads_removed.lock"
 
+export ADS_REMOVED_FILE
+export ADS_REMOVED_LOCK
+
 if [ ! -f "$ADS_REMOVED_FILE" ]; then
     echo '{"count":0}' > "$ADS_REMOVED_FILE"
 fi
