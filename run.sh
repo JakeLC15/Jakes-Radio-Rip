@@ -2,7 +2,7 @@
 
 echo "========================================"
 echo "JAKE'S STATION RIPPER STARTING"
-echo "BUILD TEST: 2026-10-05-4"
+echo "BUILD TEST: 2026-10-06-1"
 echo "========================================"
 
 set -uo pipefail
@@ -18,10 +18,13 @@ RETRY_DELAY=10
 
 LOGGING_ENABLED="false"
 BASE_OUTPUT_DIR="/media/stationripper"
+CONTINUOUS_RECORDING="false"
 
 if [ -f "$CONFIG_PATH" ]; then
     BASE_OUTPUT_DIR=$(jq --raw-output '.output_dir // "/media/stationripper"' "$CONFIG_PATH")
     LOGGING_ENABLED=$(jq --raw-output '.logging // false' "$CONFIG_PATH")
+    MIN_FILE_SIZE_MB=$(jq --raw-output '.min_file_size_mb // 1' "$CONFIG_PATH")
+    CONTINUOUS_RECORDING=$(jq --raw-output '.continuous_recording // false' "$CONFIG_PATH")
     mapfile -t STREAM_URLS < <(jq --raw-output '.streams[] // empty' "$CONFIG_PATH")
 fi
 
@@ -35,8 +38,17 @@ mkdir -p "$BASE_OUTPUT_DIR"
 STATUS_FILE="${BASE_OUTPUT_DIR}/status.json"
 STATUS_LOCK="${BASE_OUTPUT_DIR}/status.lock"
 START_TIME=$(date +%s)
+MIN_FILE_SIZE_BYTES=$((MIN_FILE_SIZE_MB * 1024 * 1024))
 
+echo "Minimum retained MP3 size: ${MIN_FILE_SIZE_MB} MB"
 echo "{}" > "$STATUS_FILE"
+
+ADS_REMOVED_FILE="${BASE_OUTPUT_DIR}/ads_removed.json"
+ADS_REMOVED_LOCK="${BASE_OUTPUT_DIR}/ads_removed.lock"
+
+if [ ! -f "$ADS_REMOVED_FILE" ]; then
+    echo '{"count":0}' > "$ADS_REMOVED_FILE"
+fi
 
 # --- CLEAN OLD INCOMPLETE FILES AT STARTUP ---
 echo "🧹 Cleaning old incomplete files..."
@@ -73,7 +85,33 @@ run_duplicate_cleanup() {
     echo "✅ Duplicate purge complete!"
 }
 
-# --- NEW: TRACK BACKGROUND PROCESSES ---
+increment_ads_removed() {
+    local count="$1"
+
+    (
+        flock 200
+
+        local current
+        current=$(jq -r '.count // 0' "$ADS_REMOVED_FILE" 2>/dev/null || echo 0)
+
+        current=$((current + count))
+
+        local tmp_file="${ADS_REMOVED_FILE}.$$"
+
+        if jq \
+            --argjson count "$current" \
+            '.count = $count' \
+            "$ADS_REMOVED_FILE" > "$tmp_file"; then
+            mv "$tmp_file" "$ADS_REMOVED_FILE"
+        else
+            rm -f "$tmp_file"
+            echo "⚠️ Failed to update ads removed counter"
+        fi
+
+    ) 200>"$ADS_REMOVED_LOCK"
+}
+
+# TRACK BACKGROUND PROCESSES ---
 RIPPER_PIDS=()
 PYTHON_PID=""
 
@@ -91,24 +129,52 @@ for URL in "${STREAM_URLS[@]}"; do
             mkdir -p "$STREAM_DIR"
             update_status "$FOLDER_NAME" "Ripping" "$RECONNECTS" ""
 
-            if [ "${LOGGING_ENABLED}" = "true" ]; then
-                streamripper \
-                    "$URL" \
-                    -d "$STREAM_DIR" \
-                    -u "WinampMPEG/5.0" \
+            if [ "${CONTINUOUS_RECORDING}" = "true" ]; then
+                echo "📻 Continuous recording enabled for $FOLDER_NAME"
+            
+                RIPPER_ARGS=(
+                    "$URL"
+                    -d "$STREAM_DIR"
+                    -a "continuous.mp3"
+                    -A
+                    -u "WinampMPEG/5.0"
                     --no-cue
+                )
             else
-                streamripper \
-                    "$URL" \
-                    -d "$STREAM_DIR" \
-                    -u "WinampMPEG/5.0" \
-                    --quiet \
+                RIPPER_ARGS=(
+                    "$URL"
+                    -d "$STREAM_DIR"
+                    -u "WinampMPEG/5.0"
                     --no-cue
+                )
             fi
+            
+            if [ "${LOGGING_ENABLED}" != "true" ]; then
+                RIPPER_ARGS+=(--quiet)
+            fi
+            
+            streamripper "${RIPPER_ARGS[@]}"
 
             RC=$?
 
-            find "$STREAM_DIR" -type f -name "*.mp3" -not -path "*/incomplete/*" -size -1M -delete 2>/dev/null
+            AD_REMOVED=0
+
+            while IFS= read -r -d '' FILE; do
+                rm -f "$FILE"
+                AD_REMOVED=$((AD_REMOVED + 1))
+            done < <(
+                find "$STREAM_DIR" \
+                    -type f \
+                    -name "*.mp3" \
+                    -not -path "*/incomplete/*" \
+                    -size "-${MIN_FILE_SIZE_BYTES}c" \
+                    -print0 2>/dev/null
+            )
+            
+            if [ "$AD_REMOVED" -gt 0 ]; then
+                increment_ads_removed "$AD_REMOVED"
+                echo "🧹 Removed $AD_REMOVED small MP3 file(s) from $FOLDER_NAME"
+            fi
 
             [ "$RC" -eq 0 ] && {
                 update_status "$FOLDER_NAME" "Offline" "$RECONNECTS" ""
@@ -143,6 +209,12 @@ from socketserver import ThreadingMixIn
 BASE_OUTPUT_DIR = os.environ.get("BASE_OUTPUT_DIR", "/media/stationripper")
 STATUS_FILE = os.environ.get("STATUS_FILE", f"{BASE_OUTPUT_DIR}/status.json")
 START_TIME = int(os.environ.get("START_TIME", time.time()))
+ADS_REMOVED_FILE = os.environ.get(
+    "ADS_REMOVED_FILE",
+    f"{BASE_OUTPUT_DIR}/ads_removed.json"
+)
+
+MIN_FILE_SIZE_MB = int(os.environ.get("MIN_FILE_SIZE_MB", "1"))
 
 class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
     daemon_threads = True
@@ -193,10 +265,19 @@ class IngressHandler(BaseHTTPRequestHandler):
             return f"{hours}h {minutes}m"
         return f"{minutes}m {seconds}s"
 
+    def _get_ads_removed(self):
+        try:
+            with open(ADS_REMOVED_FILE, "r") as f:
+                data = json.load(f)
+                return int(data.get("count", 0))
+        except:
+            return 0
+
     def _render_page(self):
         files, today_count = self._get_files()
 
         current_count = len(files)
+        ads_removed = self._get_ads_removed()
 
         try:
             usage = shutil.disk_usage(BASE_OUTPUT_DIR)
@@ -345,6 +426,12 @@ class IngressHandler(BaseHTTPRequestHandler):
             </div>
 
             <div class="stat">
+                Ads Removed
+                <div class="stat-value" id="stat-ads-removed">{ads_removed}</div>
+                <small>Files smaller than {MIN_FILE_SIZE_MB} MB</small>
+            </div>
+            
+            <div class="stat">
                 Disk Used
                 <div class="stat-value" id="stat-used">{disk_used}</div>
             </div>
@@ -403,7 +490,8 @@ class IngressHandler(BaseHTTPRequestHandler):
 
                 const elementsToUpdate = [
                     'station-list', 'current-song', 'stat-total', 'stat-today', 
-                    'stat-used', 'stat-free', 'stat-total-disk', 'stat-percent', 
+                    'stat-used', 'stat-free', 'stat-total-disk', 'stat-percent',
+                    'stat-ads-removed',
                     'stat-uptime', 'reconnect-list', 'recent-list'
                 ];
 
@@ -453,7 +541,7 @@ if __name__ == '__main__':
 EOF
 
 # Export environment paths to python sub-process scope
-export BASE_OUTPUT_DIR STATUS_FILE START_TIME
+export BASE_OUTPUT_DIR STATUS_FILE START_TIME ADS_REMOVED_FILE MIN_FILE_SIZE_MB
 
 # --- CHANGED: CLEAN SHUTDOWN ---
 shutdown_handler() {
