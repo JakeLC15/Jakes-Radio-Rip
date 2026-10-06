@@ -30,4 +30,5 @@ schema:
   streams:
     - str
   logging: bool
+  min_file_size_mb: int(1,)
   continuous_recording: bool
