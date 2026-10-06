@@ -108,6 +108,8 @@ for URL in "${STREAM_URLS[@]}"; do
 
             RC=$?
 
+            find "$STREAM_DIR" -type f -name "*.mp3" -not -path "*/incomplete/*" -size -1M -delete 2>/dev/null
+
             [ "$RC" -eq 0 ] && {
                 update_status "$FOLDER_NAME" "Offline" "$RECONNECTS" ""
                 break
@@ -118,6 +120,7 @@ for URL in "${STREAM_URLS[@]}"; do
 
             sleep "$RETRY_DELAY"
         done
+
     ) &
 
     # NEW: Save the background wrapper PID
