@@ -234,17 +234,19 @@ class IngressHandler(BaseHTTPRequestHandler):
                         <span>{state}</span>
                     </li>
                     """
-
                     reconnect_text = f"{reconnects} reconnects"
                     if last_error:
                         reconnect_text += f" — {last_error}"
 
                     reconnect_rows += f"""
                     <li>
-                        <span><strong>{station}</strong></span>
-                        <span>{reconnect_text}</span>
+                        <div style="display: flex; flex-direction: column; width: 100%;">
+                            <span style="font-weight: bold; color: #fff;">{station}</span>
+                            <small style="color: #999; margin-top: 3px;">{reconnect_text}</small>
+                        </div>
                     </li>
                     """
+
             except:
                 pass
 
@@ -261,17 +263,18 @@ class IngressHandler(BaseHTTPRequestHandler):
             current_song = os.path.splitext(current_song)[0]
 
         recent_rows = ""
-
         for mtime, path in files[:10]:
             name = os.path.splitext(os.path.basename(path))[0]
             station = os.path.basename(os.path.dirname(path))
             when = datetime.fromtimestamp(mtime).strftime("%H:%M:%S")
 
             recent_rows += f"""
-            <li>
-                <span>{name}</span>
-                <small>{station} · {when}</small>
-            </li>
+                    <li>
+                        <div style="display: flex; flex-direction: column; width: 100%;">
+                            <span style="font-weight: 500; color: #fff; word-break: break-all;">{name}</span>
+                            <small style="color: #999; margin-top: 3px;">📁 {station} · ⏱️ {when}</small>
+                        </div>
+                    </li>
             """
 
         if not recent_rows:
