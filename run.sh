@@ -2,7 +2,7 @@
 
 echo "========================================"
 echo "JAKE'S STATION RIPPER STARTING"
-echo "BUILD TEST: 2026-10-05-3"
+echo "BUILD TEST: 2026-10-05-4"
 echo "========================================"
 
 set -uo pipefail
@@ -286,10 +286,9 @@ class IngressHandler(BaseHTTPRequestHandler):
             target_media_url = f"/media-browser/browser/app,media-source:%2F%2Fmedia_source%2Flocal%2F{url_safe_subfolders}"
 
         return f"""<!DOCTYPE html>
-<html>
+<html style="background-color: #111;">
 <head>
     <title>Jake's Station Ripper</title>
-    <meta http-equiv="refresh" content="10">
     <style>
         body {{ font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #111; color: #eee; padding: 20px; }}
         .card {{ background: #222; padding: 20px; border-radius: 8px; max-width: 650px; margin-bottom: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }}
@@ -317,12 +316,12 @@ class IngressHandler(BaseHTTPRequestHandler):
 
     <div class="card">
         <h2>📻 Live Stream Status</h2>
-        <ul>{station_rows}</ul>
+        <ul id="station-list">{station_rows}</ul>
     </div>
 
     <div class="card">
         <h2>🎵 Current Track</h2>
-        <div class="current">{current_song}</div>
+        <div class="current" id="current-song">{current_song}</div>
     </div>
 
     <div class="card">
@@ -331,49 +330,49 @@ class IngressHandler(BaseHTTPRequestHandler):
         <div class="stats">
             <div class="stat">
                 Total Tracks
-                <div class="stat-value">{current_count}</div>
+                <div class="stat-value" id="stat-total">{current_count}</div>
             </div>
 
             <div class="stat">
                 Tracks Today
-                <div class="stat-value">{today_count}</div>
+                <div class="stat-value" id="stat-today">{today_count}</div>
             </div>
 
             <div class="stat">
                 Disk Used
-                <div class="stat-value">{disk_used}</div>
+                <div class="stat-value" id="stat-used">{disk_used}</div>
             </div>
 
             <div class="stat">
                 Disk Free
-                <div class="stat-value">{disk_free}</div>
+                <div class="stat-value" id="stat-free">{disk_free}</div>
             </div>
 
             <div class="stat">
                 Disk Total
-                <div class="stat-value">{disk_total}</div>
+                <div class="stat-value" id="stat-total-disk">{disk_total}</div>
             </div>
 
             <div class="stat">
                 Disk Usage
-                <div class="stat-value">{disk_percent:.1f}%</div>
+                <div class="stat-value" id="stat-percent">{disk_percent:.1f}%</div>
             </div>
 
             <div class="stat">
                 Uptime
-                <div class="stat-value">{self._format_uptime()}</div>
+                <div class="stat-value" id="stat-uptime">{self._format_uptime()}</div>
             </div>
         </div>
     </div>
 
     <div class="card">
         <h2>🔄 Connection History</h2>
-        <ul>{reconnect_rows}</ul>
+        <ul id="reconnect-list">{reconnect_rows}</ul>
     </div>
 
     <div class="card">
         <h2>🕘 Recent Tracks</h2>
-        <ul>{recent_rows}</ul>
+        <ul id="recent-list">{recent_rows}</ul>
     </div>
 
     <div class="card">
@@ -386,6 +385,38 @@ class IngressHandler(BaseHTTPRequestHandler):
         </form>
     </div>
 
+    <script>
+        setInterval(async () => {{
+            try {{
+                const res = await fetch(window.location.href);
+                const text = await res.text();
+                
+                const sliceHTML = (html, id) => {{
+                    const marker = 'id="' + id + '"';
+                    let start = html.indexOf(marker);
+                    if (start === -1) return null;
+                    start = html.indexOf('>', start) + 1;
+                    const end = html.indexOf('</', start);
+                    return html.substring(start, end);
+                }};
+
+                const elementsToUpdate = [
+                    'station-list', 'current-song', 'stat-total', 'stat-today', 
+                    'stat-used', 'stat-free', 'stat-total-disk', 'stat-percent', 
+                    'stat-uptime', 'reconnect-list', 'recent-list'
+                ];
+
+                elementsToUpdate.forEach(id => {{
+                    const chunk = sliceHTML(text, id);
+                    if (chunk !== null) {{
+                        document.getElementById(id).innerHTML = chunk;
+                    }}
+                }});
+            }} catch (e) {{
+                console.log("Silent sync background check skipped:", e);
+            }}
+        }}, 10000);
+    </script>
 </body>
 </html>"""
 
