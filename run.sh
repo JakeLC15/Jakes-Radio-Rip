@@ -38,7 +38,7 @@ mkdir -p "$BASE_OUTPUT_DIR"
 STATUS_FILE="${BASE_OUTPUT_DIR}/status.json"
 STATUS_LOCK="${BASE_OUTPUT_DIR}/status.lock"
 START_TIME=$(date +%s)
-MIN_FILE_SIZE_BYTES=$((MIN_FILE_SIZE_MB * 1024 * 1024))
+MIN_FILE_SIZE_BYTES=$(awk "BEGIN {printf \"%d\", $MIN_FILE_SIZE_MB * 1024 * 1024}")
 
 echo "Minimum retained MP3 size: ${MIN_FILE_SIZE_MB} MB"
 echo "{}" > "$STATUS_FILE"
@@ -50,11 +50,11 @@ if [ ! -f "$ADS_REMOVED_FILE" ]; then
     echo '{"count":0}' > "$ADS_REMOVED_FILE"
 fi
 
-# --- CLEAN OLD INCOMPLETE FILES AT STARTUP ---
+# Clean up incomplete
 echo "🧹 Cleaning old incomplete files..."
 find "$BASE_OUTPUT_DIR" -type f -path "*/incomplete/*" -delete 2>/dev/null
 
-# --- STATUS FUNCTION ---
+# Status function
 update_status() {
     local station="$1"
     local status="$2"
@@ -78,13 +78,14 @@ update_status() {
     ) 200>"$STATUS_LOCK"
 }
 
-# --- MANUAL REUSABLE PURGE FUNCTION ---
+# Purge button function
 run_duplicate_cleanup() {
     echo "🧹 Starting manual duplicate purge..."
     find "$BASE_OUTPUT_DIR" -type f -name "*.mp3" | grep -E "\([0-9]+\)\.mp3$" | tr '\n' '\0' | xargs -0 rm -f
     echo "✅ Duplicate purge complete!"
 }
 
+# Files removed less than spec function
 increment_ads_removed() {
     local count="$1"
 
@@ -111,7 +112,7 @@ increment_ads_removed() {
     ) 200>"$ADS_REMOVED_LOCK"
 }
 
-# TRACK BACKGROUND PROCESSES ---
+# Track Background
 RIPPER_PIDS=()
 PYTHON_PID=""
 
@@ -189,11 +190,11 @@ for URL in "${STREAM_URLS[@]}"; do
 
     ) &
 
-    # NEW: Save the background wrapper PID
+    # Save the background wrapper PID
     RIPPER_PIDS+=("$!")
 done
 
-# --- PYTHON-BASED MULTI-THREADED INGRESS ENGINE ---
+# Python Ingress - Web UI
 echo "🚀 Starting Ingress Web UI engine on port 8099..."
 
 cat << 'EOF' > /tmp/server.py
@@ -543,7 +544,7 @@ EOF
 # Export environment paths to python sub-process scope
 export BASE_OUTPUT_DIR STATUS_FILE START_TIME ADS_REMOVED_FILE MIN_FILE_SIZE_MB
 
-# --- CHANGED: CLEAN SHUTDOWN ---
+# Shutdown function
 shutdown_handler() {
     echo "Shutting down Jakes Station Ripper..."
 
@@ -557,7 +558,7 @@ shutdown_handler() {
         kill "$PID" 2>/dev/null || true
     done
 
-    # Give children a moment to exit
+    # Give a sec to exit but not take 10 and trip supervisor
     sleep 1
 
     # Force anything still running
@@ -579,7 +580,7 @@ trap 'shutdown_handler' SIGINT SIGTERM
 # Run the python server in the foreground to keep the container alive
 python3 /tmp/server.py &
 
-# NEW: Save Python PID
+# Save Python PID
 PYTHON_PID=$!
 
 # Wait for Python server
