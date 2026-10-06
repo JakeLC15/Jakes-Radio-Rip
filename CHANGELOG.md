@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026.10.06-1
+- **Added:** Configurable file size to remove ads or incomplete tracks.
+- **Added:** Ad Counter in Web UI
+- **Added:** Control for track being saved as individual or continuous. Adds ability to save podcast type streams.
+## 2026.10.05-1
+- **Added:** Web UI update to show more info
 ## 2026.10.04-1
 - **Added:** Media button mapped to configured output directory.
 - **Fixed:** No longer saving .cue file.
