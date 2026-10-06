@@ -11,6 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libogg-dev \
     libvorbis-dev \
     python3 \
+    inotify-tools \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
@@ -64,6 +65,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libogg0 \
     libvorbis0a \
     python3 \
+    inotify-tools \
     && update-ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
