@@ -391,14 +391,9 @@ class IngressHandler(BaseHTTPRequestHandler):
                 const res = await fetch(window.location.href);
                 const text = await res.text();
                 
-                const sliceHTML = (html, id) => {{
-                    const marker = 'id="' + id + '"';
-                    let start = html.indexOf(marker);
-                    if (start === -1) return null;
-                    start = html.indexOf('>', start) + 1;
-                    const end = html.indexOf('</', start);
-                    return html.substring(start, end);
-                }};
+                // Parse the incoming text cleanly into a hidden document framework
+                const parser = new DOMParser();
+                const doc = parser.parseFromString(text, 'text/html');
 
                 const elementsToUpdate = [
                     'station-list', 'current-song', 'stat-total', 'stat-today', 
@@ -406,10 +401,12 @@ class IngressHandler(BaseHTTPRequestHandler):
                     'stat-uptime', 'reconnect-list', 'recent-list'
                 ];
 
+                // Swap out the full contents exactly as they appear on the server
                 elementsToUpdate.forEach(id => {{
-                    const chunk = sliceHTML(text, id);
-                    if (chunk !== null) {{
-                        document.getElementById(id).innerHTML = chunk;
+                    const newEl = doc.getElementById(id);
+                    const oldEl = document.getElementById(id);
+                    if (newEl && oldEl) {{
+                        oldEl.innerHTML = newEl.innerHTML;
                     }}
                 }});
             }} catch (e) {{
