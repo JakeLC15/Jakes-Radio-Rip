@@ -1,5 +1,8 @@
 # Changelog
 
+## 2026.10.08-1
+- **Added:** Configurable network port.
+- **Added:** Memory cleanup and limiting process. Keep it from growing too large.
 ## 2026.10.06-1
 - **Added:** Configurable file size to remove ads or incomplete tracks.
 - **Added:** Ad Counter in Web UI
