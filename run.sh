@@ -196,12 +196,6 @@ watch_completed_files() {
     exec 3<&-
 }
 
-
-
-    # Clean close the open stream handle if the loop terminates
-    exec 3<&-
-}
-
 # Track Background
 RIPPER_PIDS=()
 PYTHON_PID=""
