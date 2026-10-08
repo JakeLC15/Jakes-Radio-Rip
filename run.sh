@@ -2,7 +2,7 @@
 
 echo "========================================"
 echo "JAKE'S STATION RIPPER STARTING"
-echo "BUILD TEST: 2026-10-06-1"
+echo "BUILD TEST: 2026-10-08-1"
 echo "========================================"
 
 set -uo pipefail
@@ -166,6 +166,9 @@ watch_completed_files() {
         [ -f "$FILE" ] || continue
 
         FILE_SIZE=$(stat -c%s "$FILE" 2>/dev/null || echo 0)
+
+        # Temp Debug:
+        echo "🔍 DEBUG: File is ${FILE_SIZE} bytes. Target minimum is ${MIN_FILE_SIZE_BYTES:-EMPTY_OR_ZERO} bytes."
 
         # Mark it processed regardless of size
         PROCESSED_FILES["$FILE"]=1
