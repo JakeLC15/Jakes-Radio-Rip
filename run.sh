@@ -2,7 +2,7 @@
 
 echo "========================================"
 echo "JAKE'S STATION RIPPER STARTING"
-echo "BUILD TEST: 2026-10-08-1"
+echo "BUILD TEST: 2026-10-08-2"
 echo "========================================"
 
 set -uo pipefail
@@ -155,10 +155,13 @@ watch_completed_files() {
                 ;;
         esac
 
-        # Only process each pathname once
+        # 1. 🛑 CHECK IN PRINCIPLE IMMEDIATELY (Before the sleep)
         if [ "${PROCESSED_FILES["$FILE"]:-0}" = "1" ]; then
             continue
         fi
+
+        # 2. 🔒 LOCK IT IMMEDIATELY so duplicate events drop out
+        PROCESSED_FILES["$FILE"]=1
 
         # File has finished being written/moved into place
         sleep 0.2
@@ -167,11 +170,8 @@ watch_completed_files() {
 
         FILE_SIZE=$(stat -c%s "$FILE" 2>/dev/null || echo 0)
 
-        # Temp Debug:
-        echo "🔍 DEBUG: File is ${FILE_SIZE} bytes. Target minimum is ${MIN_FILE_SIZE_BYTES:-EMPTY_OR_ZERO} bytes."
-
-        # Mark it processed regardless of size
-        PROCESSED_FILES["$FILE"]=1
+        # 🔍 DEBUG: File evaluation
+        echo "🔍 DEBUG: File is $FILE_SIZE bytes. Target minimum is $MIN_FILE_SIZE_BYTES bytes."
 
         if [ "$FILE_SIZE" -lt "$MIN_FILE_SIZE_BYTES" ]; then
             FILE_NAME=$(basename "$FILE")
@@ -185,6 +185,7 @@ watch_completed_files() {
         fi
 
     done
+
 
     # Clean close the open stream handle if the loop terminates
     exec 3<&-
