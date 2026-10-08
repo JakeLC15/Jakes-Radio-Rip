@@ -119,12 +119,12 @@ increment_ads_removed() {
 
 # Watch for completed MP3 files without repeatedly scanning directories
 watch_completed_files() {
-    echo "👀 Watching $STREAM_DIR for completed MP3 files..."
+    echo "👀 Watching $STREAM_DIR (and subfolders) for completed MP3 files..."
 
     declare -A PROCESSED_FILES
+    declare -a PROCESS_HISTORY
+    local MAX_HISTORY=50
 
-    # Open a dedicated file descriptor (3) bound directly to the inotifywait event thread.
-    # This prevents Bash from isolating the while loop inside a locked child subshell.
     exec 3< <(
         inotifywait \
             --monitor \
@@ -136,55 +136,66 @@ watch_completed_files() {
             "$STREAM_DIR"
     )
 
-    # Read continuously from the dedicated descriptor channel
     while IFS='|' read -u 3 -r -d '' EVENT FILE; do
 
-        # Only process MP3 files
+        # 1. Standard extension filters
         case "$FILE" in
-            *.mp3|*.MP3)
-                ;;
-            *)
-                continue
-                ;;
+            *.mp3|*.MP3) ;;
+            *) continue ;;
         esac
 
-        # Never process Streamripper's incomplete directory
         case "$FILE" in
-            */incomplete/*)
-                continue
-                ;;
+            */incomplete/*) continue ;;
         esac
 
-        # 1. 🛑 CHECK IN PRINCIPLE IMMEDIATELY (Before the sleep)
+        # 2. IMMEDIATE LOCK PROTECTION (Drops the 5 duplicate stream events instantly)
         if [ "${PROCESSED_FILES["$FILE"]:-0}" = "1" ]; then
             continue
         fi
-
-        # 2. 🔒 LOCK IT IMMEDIATELY so duplicate events drop out
         PROCESSED_FILES["$FILE"]=1
+        
+        # 3. GARBAGE COLLECTION (Prevents 5 multi-streams from leaking RAM)
+        PROCESS_HISTORY+=("$FILE")
+        if [ "${#PROCESS_HISTORY[@]}" -gt "$MAX_HISTORY" ]; then
+            local OLDEST_FILE="${PROCESS_HISTORY[0]}"
+            unset 'PROCESSED_FILES["$OLDEST_FILE"]'   # Evict oldest entry from tracking
+            PROCESS_HISTORY=("${PROCESS_HISTORY[@]:1}") # Pop from array index
+        fi
 
-        # File has finished being written/moved into place
-        sleep 0.2
+        # 4. Settle delay to let Streamripper clear OS file locks
+        sleep 0.3
 
         [ -f "$FILE" ] || continue
-
         FILE_SIZE=$(stat -c%s "$FILE" 2>/dev/null || echo 0)
 
-        # 🔍 DEBUG: File evaluation
-        echo "🔍 DEBUG: File is $FILE_SIZE bytes. Target minimum is $MIN_FILE_SIZE_BYTES bytes."
-
+        # 5. Advanced Evaluation and Deletion
         if [ "$FILE_SIZE" -lt "$MIN_FILE_SIZE_BYTES" ]; then
             FILE_NAME=$(basename "$FILE")
+            # Extract parent folder name to log WHICH stream produced the file
+            STREAM_SOURCE=$(basename "$(dirname "$FILE")")
 
-            echo "🧹 Removing small MP3: $FILE_NAME (${FILE_SIZE} bytes)"
+            echo "🧹 [$STREAM_SOURCE] Removing small MP3: $FILE_NAME (${FILE_SIZE} bytes)"
 
-            if rm -f -- "$FILE"; then
+            # Drop file and handle parallel OS read locks safely
+            if rm -- "$FILE" 2>/dev/null; then
                 increment_ads_removed 1
-                echo "🗑️ Removed: $FILE_NAME"
+                echo "🗑️ Removed successfully"
+            else
+                sleep 0.5
+                if rm -f -- "$FILE"; then
+                    increment_ads_removed 1
+                    echo "🗑️ Forced removal successful after cool-down"
+                else
+                    echo "❌ ERROR: System locked path: $FILE_NAME"
+                fi
             fi
         fi
 
     done
+
+    exec 3<&-
+}
+
 
 
     # Clean close the open stream handle if the loop terminates
