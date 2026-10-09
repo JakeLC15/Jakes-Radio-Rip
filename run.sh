@@ -222,6 +222,8 @@ for URL in "${STREAM_URLS[@]}"; do
                     -d "$STREAM_DIR"
                     -a "continuous.mp3"
                     -A
+                    -i
+                    --xs-none
                     -u "WinampMPEG/5.0"
                     --no-cue
                 )
