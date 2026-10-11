@@ -2,7 +2,7 @@
 
 echo "========================================"
 echo "JAKE'S STATION RIPPER STARTING"
-echo "BUILD TEST: 2026-10-11-6"
+echo "BUILD TEST: 2026-10-11-7"
 echo "========================================"
 
 set -uo pipefail
@@ -104,15 +104,24 @@ increment_ads_removed() {
     fi
 }
 
+# Setup named pipe paths
+PIPE_PATH="/tmp/stationripper_events.fifo"
+rm -f "$PIPE_PATH"
+mkfifo "$PIPE_PATH"
+
 # Watch files to meet proper spec
 watch_all_completed_files() {
-    echo "👀 Global watcher started. Monitoring: $BASE_OUTPUT_DIR"
+    echo "👀 Global watcher started. Monitoring via FIFO: $BASE_OUTPUT_DIR"
 
     declare -A PROCESSED_FILES
     declare -a PROCESS_HISTORY
     local MAX_HISTORY=500
 
-    inotifywait --monitor --quiet --recursive --no-newline --event close_write --event moved_to --format '%w|%f%0' "$BASE_OUTPUT_DIR" | while IFS='|' read -r -d '' WATCHED_DIR FILE_NAME; do
+    inotifywait --monitor --quiet --recursive --no-newline --event close_write --event moved_to --format '%w|%f%0' "$BASE_OUTPUT_DIR" > "$PIPE_PATH" &
+    INOTIFY_PID=$!
+
+    # Read events line by line from the persistent system named pipe channel
+    while IFS='|' read -r -d '' WATCHED_DIR FILE_NAME; do
 
         case "$FILE_NAME" in
             *.mp3|*.MP3) ;;
@@ -137,13 +146,13 @@ watch_all_completed_files() {
             PROCESS_HISTORY=("${PROCESS_HISTORY[@]:1}")
         fi
 
+        # Process the file deletion checks in the background so the FIFO channel stays cleared
         (
             sleep 2.5
 
             if [ -f "$REAL_PATH" ]; then
                 FILE_SIZE=$(stat -c%s "$REAL_PATH" 2>/dev/null || echo 0)
 
-                # If size reads as 0 due to an active tag lock, retry once
                 if [ "$FILE_SIZE" -eq 0 ]; then
                     sleep 1.5
                     FILE_SIZE=$(stat -c%s "$REAL_PATH" 2>/dev/null || echo 0)
@@ -151,28 +160,29 @@ watch_all_completed_files() {
 
                 if [ "$FILE_SIZE" -gt 0 ] && [ "$FILE_SIZE" -lt "$MIN_FILE_SIZE_BYTES" ]; then
                     STREAM_SOURCE=$(basename "$WATCHED_DIR")
-                    AD_FILE_SIZE_MB=$(awk -v bytes="$FILE_SIZE" 'BEGIN { printf "%.2f", bytes / 1024 / 1024 }')
+                    FILE_SIZE_MB=$(awk -v bytes="$FILE_SIZE" 'BEGIN { printf "%.2f", bytes / 1024 / 1024 }')
 
-                    echo "Refined Path verification targets: $REAL_PATH"
-                    echo "🧹 [$STREAM_SOURCE] Match Found: Removing small MP3: $FILE_NAME (${AD_FILE_SIZE_MB} MB)"
+                    echo "🧹 [$STREAM_SOURCE] Match Found: Removing small MP3: $FILE_NAME (${FILE_SIZE_MB} MB)"
 
-                    # Delete file
                     rm -f -- "$REAL_PATH" 2>/dev/null
                     
                     if [ ! -f "$REAL_PATH" ]; then
                         increment_ads_removed 1
                         echo "🗑️ Removed successfully"
                     else
-                        # Final forced cleanup fallback
-                        sleep 1.0
-                        rm -f -- "$REAL_PATH" && increment_ads_removed 1 && echo "🗑️ Forced removal successful" || echo "❌ ERROR: System locked path: $FILE_NAME"
+                        sleep 1.5
+                        if rm -f -- "$REAL_PATH"; then
+                            increment_ads_removed 1
+                            echo "🗑️ Forced removal successful"
+                        else
+                            echo "❌ ERROR: System locked path: $FILE_NAME"
+                        fi
                     fi
                 fi
             fi
         ) &
-    done
+    done < "$PIPE_PATH"
 }
-
 # Start watcher if not in continuous_recording mode
 GLOBAL_WATCHER_PID=""
 if [ "${CONTINUOUS_RECORDING}" != "true" ]; then
