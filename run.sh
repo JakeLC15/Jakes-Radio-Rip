@@ -35,10 +35,7 @@ fi
 
 mkdir -p "$BASE_OUTPUT_DIR"
 
-SAVED_STREAMS_FILE = os.environ.get(
-    "SAVED_STREAMS_FILE",
-    os.path.join(BASE_OUTPUT_DIR, "saved_streams.json")
-)
+SAVED_STREAMS_FILE="${SAVED_STREAMS_FILE:-$BASE_OUTPUT_DIR/saved_streams.json}"
 
 if [ ! -f "$SAVED_STREAMS_FILE" ]; then
     echo '{"streams":[]}' > "$SAVED_STREAMS_FILE"
