@@ -815,6 +815,132 @@ class IngressHandler(BaseHTTPRequestHandler):
     </div>
 
     <script>
+        // Submit Ingress forms without navigating the Home Assistant frontend.
+        document.addEventListener("submit", async (event) => {{
+            const form = event.target;
+
+            if (!(form instanceof HTMLFormElement)) return;
+            if (form.method.toLowerCase() !== "post") return;
+
+            event.preventDefault();
+
+            const submitButton = event.submitter;
+            const originalText = submitButton ? submitButton.textContent : "";
+
+            if (submitButton) {{
+                submitButton.disabled = true;
+                submitButton.textContent = "Please wait...";
+            }}
+
+            let notice = document.getElementById("form-notice");
+
+            if (!notice) {{
+                notice = document.createElement("div");
+                notice.id = "form-notice";
+                notice.style.cssText =
+                    "position:sticky;top:0;background:#263238;color:#fff;" +
+                    "padding:14px;margin-bottom:16px;border-radius:6px;" +
+                    "z-index:9999;overflow-wrap:anywhere;";
+                document.body.prepend(notice);
+            }}
+
+            const formData = new FormData(form);
+            const action = formData.get("action") || "purge_duplicates";
+
+            try {{
+                notice.textContent = "Submitting request...";
+
+                const response = await fetch(form.action || window.location.href, {{
+                    method: "POST",
+                    body: new URLSearchParams(formData),
+                    credentials: "same-origin",
+                    redirect: "follow"
+                }});
+
+                if (!response.ok) {{
+                    const details = await response.text();
+                    throw new Error(
+                        "HTTP " + response.status + ": " + details.slice(0, 500)
+                    );
+                }}
+
+                if (action === "save_stream") {{
+                    notice.textContent =
+                        "Station saved. Updating the saved station list...";
+
+                    // Refresh the page data without navigating away from Ingress.
+                    const pageResponse = await fetch(window.location.href, {{
+                        credentials: "same-origin"
+                    }});
+
+                    if (pageResponse.ok) {{
+                        const pageText = await pageResponse.text();
+                        const parser = new DOMParser();
+                        const newDoc = parser.parseFromString(pageText, "text/html");
+                        const newCard = Array.from(
+                            newDoc.querySelectorAll(".card")
+                        ).find(card =>
+                            card.querySelector("h2")?.textContent.includes("Saved Streams")
+                        );
+                        const oldCard = Array.from(
+                            document.querySelectorAll(".card")
+                        ).find(card =>
+                            card.querySelector("h2")?.textContent.includes("Saved Streams")
+                        );
+
+                        if (newCard && oldCard) {{
+                            oldCard.replaceWith(newCard);
+                        }}
+                    }}
+
+                    notice.textContent = "Station saved successfully.";
+                }} else if (action === "remove_saved_stream") {{
+                    notice.textContent = "Saved station removed.";
+
+                    const pageResponse = await fetch(window.location.href, {{
+                        credentials: "same-origin"
+                    }});
+
+                    if (pageResponse.ok) {{
+                        const pageText = await pageResponse.text();
+                        const parser = new DOMParser();
+                        const newDoc = parser.parseFromString(pageText, "text/html");
+                        const newCard = Array.from(
+                            newDoc.querySelectorAll(".card")
+                        ).find(card =>
+                            card.querySelector("h2")?.textContent.includes("Saved Streams")
+                        );
+                        const oldCard = Array.from(
+                            document.querySelectorAll(".card")
+                        ).find(card =>
+                            card.querySelector("h2")?.textContent.includes("Saved Streams")
+                        );
+
+                        if (newCard && oldCard) {{
+                            oldCard.replaceWith(newCard);
+                        }}
+                    }}
+                }} else if (
+                    action === "start_recording" ||
+                    action === "stop_recording"
+                ) {{
+                    notice.textContent =
+                        "Configuration saved. The add-on is restarting. " +
+                        "Wait for it to come back online before refreshing this page.";
+                }} else {{
+                    notice.textContent = "Request completed.";
+                }}
+            }} catch (error) {{
+                notice.textContent =
+                    "Request failed: " + (error?.message || String(error));
+            }} finally {{
+                if (submitButton && document.contains(submitButton)) {{
+                    submitButton.disabled = false;
+                    submitButton.textContent = originalText;
+                }}
+            }}
+        }});
+        
         setInterval(async () => {{
             try {{
                 const res = await fetch(window.location.href);
