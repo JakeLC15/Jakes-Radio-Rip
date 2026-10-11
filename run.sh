@@ -2,7 +2,7 @@
 
 echo "========================================"
 echo "JAKE'S STATION RIPPER STARTING"
-echo "BUILD TEST: 2026-10-08-2"
+echo "BUILD TEST: 2026-10-11-1"
 echo "========================================"
 
 set -uo pipefail
@@ -117,28 +117,25 @@ increment_ads_removed() {
     ) 200>"$ADS_REMOVED_LOCK"
 }
 
-# Watch for completed MP3 files without repeatedly scanning directories
-watch_completed_files() {
-    echo "👀 Watching $STREAM_DIR (and subfolders) for completed MP3 files..."
+# Watch files to meet proper spec
+watch_all_completed_files() {
+    echo "👀 Global watcher started. Monitoring: $BASE_OUTPUT_DIR"
 
     declare -A PROCESSED_FILES
     declare -a PROCESS_HISTORY
-    local MAX_HISTORY=50
+    local MAX_HISTORY=100
 
-    exec 3< <(
-        inotifywait \
-            --monitor \
-            --quiet \
-            --recursive \
-            --event close_write \
-            --event moved_to \
-            --format '%e|%w%f%0' \
-            "$STREAM_DIR"
-    )
+    inotifywait \
+        --monitor \
+        --quiet \
+        --recursive \
+        --no-newline \
+        --event close_write \
+        --event moved_to \
+        --format '%e|%w%f%0' \
+        "$BASE_OUTPUT_DIR" | while IFS='|' read -r -d '' EVENT FILE; do
 
-    while IFS='|' read -u 3 -r -d '' EVENT FILE; do
-
-        # 1. Standard extension filters
+        # Only mp3 right now
         case "$FILE" in
             *.mp3|*.MP3) ;;
             *) continue ;;
@@ -148,41 +145,41 @@ watch_completed_files() {
             */incomplete/*) continue ;;
         esac
 
-        # 2. IMMEDIATE LOCK PROTECTION (Drops the 5 duplicate stream events instantly)
+        # 2. De-duplication 
         if [ "${PROCESSED_FILES["$FILE"]:-0}" = "1" ]; then
             continue
         fi
         PROCESSED_FILES["$FILE"]=1
         
-        # 3. GARBAGE COLLECTION (Prevents 5 multi-streams from leaking RAM)
         PROCESS_HISTORY+=("$FILE")
         if [ "${#PROCESS_HISTORY[@]}" -gt "$MAX_HISTORY" ]; then
             local OLDEST_FILE="${PROCESS_HISTORY[0]}"
-            unset 'PROCESSED_FILES["$OLDEST_FILE"]'   # Evict oldest entry from tracking
-            PROCESS_HISTORY=("${PROCESS_HISTORY[@]:1}") # Pop from array index
+            unset 'PROCESSED_FILES["$OLDEST_FILE"]'
+            PROCESS_HISTORY=("${PROCESS_HISTORY[@]:1}")
         fi
 
-        # 4. Settle delay to let Streamripper clear OS file locks
-        sleep 0.3
+        # 3. Streamripper file cool-down
+        sleep 1.2
 
         [ -f "$FILE" ] || continue
         FILE_SIZE=$(stat -c%s "$FILE" 2>/dev/null || echo 0)
 
-        # 5. Advanced Evaluation and Deletion
+        # 4. Evaluation and Deletion
         if [ "$FILE_SIZE" -lt "$MIN_FILE_SIZE_BYTES" ]; then
             FILE_NAME=$(basename "$FILE")
-            # Extract parent folder name to log WHICH stream produced the file
             STREAM_SOURCE=$(basename "$(dirname "$FILE")")
 
             echo "🧹 [$STREAM_SOURCE] Removing small MP3: $FILE_NAME (${FILE_SIZE} bytes)"
 
-            # Drop file and handle parallel OS read locks safely
-            if rm -- "$FILE" 2>/dev/null; then
+            rm -f -- "$FILE" 2>/dev/null
+            
+            if [ ! -f "$FILE" ]; then
                 increment_ads_removed 1
                 echo "🗑️ Removed successfully"
             else
-                sleep 0.5
-                if rm -f -- "$FILE"; then
+                sleep 2.0
+                rm -f -- "$FILE"
+                if [ ! -f "$FILE" ]; then
                     increment_ads_removed 1
                     echo "🗑️ Forced removal successful after cool-down"
                 else
@@ -190,11 +187,14 @@ watch_completed_files() {
                 fi
             fi
         fi
-
     done
-
-    exec 3<&-
 }
+
+# Start the ONE global watcher to handle all parallel stream files safely
+if [ "${CONTINUOUS_RECORDING}" != "true" ]; then
+    watch_all_completed_files &
+    GLOBAL_WATCHER_PID=$!
+fi
 
 # Track Background
 RIPPER_PIDS=()
@@ -627,6 +627,10 @@ export BASE_OUTPUT_DIR STATUS_FILE START_TIME ADS_REMOVED_FILE MIN_FILE_SIZE_MB
 # Shutdown function
 shutdown_handler() {
     echo "Shutting down Jakes Station Ripper..."
+
+    if [ -n "${GLOBAL_WATCHER_PID:-}" ]; then
+        kill "$GLOBAL_WATCHER_PID" 2>/dev/null || true
+    fi
 
     # Stop Python server
     if [ -n "$PYTHON_PID" ]; then
