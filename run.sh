@@ -2,7 +2,7 @@
 
 echo "========================================"
 echo "JAKE'S STATION RIPPER STARTING"
-echo "BUILD TEST: 2026-10-11-5"
+echo "BUILD TEST: 2026-10-11-6"
 echo "========================================"
 
 set -uo pipefail
@@ -112,77 +112,65 @@ watch_all_completed_files() {
     declare -a PROCESS_HISTORY
     local MAX_HISTORY=500
 
-    inotifywait --monitor --quiet --recursive --no-newline --event close_write --event moved_to --format '%e|%w%f%0' "$BASE_OUTPUT_DIR" | while IFS='|' read -r -d '' EVENT FILE; do
+    inotifywait --monitor --quiet --recursive --no-newline --event close_write --event moved_to --format '%w|%f%0' "$BASE_OUTPUT_DIR" | while IFS='|' read -r -d '' WATCHED_DIR FILE_NAME; do
 
-        case "$FILE" in
-            *.mp3|*.MP3|*.bak|*.tmp) ;;
+        case "$FILE_NAME" in
+            *.mp3|*.MP3) ;;
             *) continue ;;
         esac
 
-        case "$FILE" in
+        case "$WATCHED_DIR" in
             */incomplete/*) continue ;;
         esac
 
-        FILE_NAME=$(basename "$FILE" | sed 's/\.bak//g' | sed 's/\.tmp//g')
-        STREAM_SOURCE=$(basename "$(dirname "$FILE")")
+        REAL_PATH="${WATCHED_DIR}${FILE_NAME}"
 
-        # Make tracking keys unique per stream
-        TRACKING_KEY="${STREAM_SOURCE}:${FILE_NAME}"
-
-        if [ "${PROCESSED_FILES["$TRACKING_KEY"]:-0}" = "1" ]; then
+        if [ "${PROCESSED_FILES["$REAL_PATH"]:-0}" = "1" ]; then
             continue
         fi
-        PROCESSED_FILES["$TRACKING_KEY"]=1
+        PROCESSED_FILES["$REAL_PATH"]=1
         
-        PROCESS_HISTORY+=("$TRACKING_KEY")
+        PROCESS_HISTORY+=("$REAL_PATH")
         if [ "${#PROCESS_HISTORY[@]}" -gt "$MAX_HISTORY" ]; then
-            # Get oldest item from index 0
-            local OLDEST_KEY="${PROCESS_HISTORY[0]}"
-            unset 'PROCESSED_FILES["$OLDEST_KEY"]'
+            local OLDEST_PATH="${PROCESS_HISTORY[0]}"
+            unset 'PROCESSED_FILES["$OLDEST_PATH"]'
             PROCESS_HISTORY=("${PROCESS_HISTORY[@]:1}")
         fi
 
-        sleep 2.0
+        (
+            sleep 2.5
 
-        REAL_PATH=$(find "$BASE_OUTPUT_DIR" -type f -name "$FILE_NAME" ! -path "*/incomplete/*" -print -quit 2>/dev/null)
+            if [ -f "$REAL_PATH" ]; then
+                FILE_SIZE=$(stat -c%s "$REAL_PATH" 2>/dev/null || echo 0)
 
-        [ -n "$REAL_PATH" ] && [ -f "$REAL_PATH" ] || continue
-        
-        FILE_SIZE=$(stat -c%s "$REAL_PATH" 2>/dev/null || echo 0)
+                # If size reads as 0 due to an active tag lock, retry once
+                if [ "$FILE_SIZE" -eq 0 ]; then
+                    sleep 1.5
+                    FILE_SIZE=$(stat -c%s "$REAL_PATH" 2>/dev/null || echo 0)
+                fi
 
-        if [ "$FILE_SIZE" -eq 0 ]; then
-            sleep 1.5
-            FILE_SIZE=$(stat -c%s "$REAL_PATH" 2>/dev/null || echo 0)
-        fi
+                if [ "$FILE_SIZE" -gt 0 ] && [ "$FILE_SIZE" -lt "$MIN_FILE_SIZE_BYTES" ]; then
+                    STREAM_SOURCE=$(basename "$WATCHED_DIR")
+                    AD_FILE_SIZE_MB=$(awk -v bytes="$FILE_SIZE" 'BEGIN { printf "%.2f", bytes / 1024 / 1024 }')
 
-        [ "$FILE_SIZE" -gt 0 ] || continue
+                    echo "Refined Path verification targets: $REAL_PATH"
+                    echo "🧹 [$STREAM_SOURCE] Match Found: Removing small MP3: $FILE_NAME (${AD_FILE_SIZE_MB} MB)"
 
-        if [ "$FILE_SIZE" -lt "$MIN_FILE_SIZE_BYTES" ]; then
-            STREAM_SOURCE=$(basename "$(dirname "$REAL_PATH")")
-
-            AD_FILE_SIZE_MB=$(awk -v bytes="$FILE_SIZE" 'BEGIN { printf "%.2f", bytes / 1024 / 1024 }')
-
-            echo "🧹 [$STREAM_SOURCE] Match Found: Removing small MP3: $FILE_NAME (${AD_FILE_SIZE_MB} MB)"
-
-            rm -f -- "$REAL_PATH" 2>/dev/null
-            
-            if [ ! -f "$REAL_PATH" ]; then
-                increment_ads_removed 1
-                echo "🗑️ Removed successfully"
-            else
-                sleep 2.0
-                rm -f -- "$REAL_PATH"
-                if [ ! -f "$REAL_PATH" ]; then
-                    increment_ads_removed 1
-                    echo "🗑️ Forced removal successful after cool-down"
-                else
-                    echo "❌ ERROR: System locked path: $FILE_NAME"
+                    # Delete file
+                    rm -f -- "$REAL_PATH" 2>/dev/null
+                    
+                    if [ ! -f "$REAL_PATH" ]; then
+                        increment_ads_removed 1
+                        echo "🗑️ Removed successfully"
+                    else
+                        # Final forced cleanup fallback
+                        sleep 1.0
+                        rm -f -- "$REAL_PATH" && increment_ads_removed 1 && echo "🗑️ Forced removal successful" || echo "❌ ERROR: System locked path: $FILE_NAME"
+                    fi
                 fi
             fi
-        fi
+        ) &
     done
-}
-
 
 # Start watcher if not in continuous_recording mode
 GLOBAL_WATCHER_PID=""
