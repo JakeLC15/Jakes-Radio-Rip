@@ -2,7 +2,7 @@
 
 echo "========================================"
 echo "JAKE'S STATION RIPPER STARTING"
-echo "BUILD TEST: 2026-10-11-10"
+echo "BUILD TEST: 2026-10-11-11"
 echo "========================================"
 
 set -uo pipefail
@@ -285,7 +285,7 @@ ADS_REMOVED_FILE = os.environ.get(
 MIN_FILE_SIZE_MB = float(os.environ.get("MIN_FILE_SIZE_MB", "1"))
 
 CONFIG_PATH = "/data/options.json"
-
+SAVED_STREAMS_FILE = "/data/saved_streams.json"
 SUPERVISOR_URL = "http://supervisor"
 ADDON_SLUG = "self"
 
@@ -375,20 +375,39 @@ def get_configured_streams():
         if isinstance(url, str) and url.strip()
     ))
 
-
 def load_saved_streams():
-    """Build the Saved Streams display from the add-on configuration."""
-    streams = []
+    """Load bookmarked stations, independently of active streams."""
+    try:
+        with open(SAVED_STREAMS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
 
-    for url in get_configured_streams():
-        name = urlparse(url).hostname or url
+        if not isinstance(data, list):
+            return []
 
-        streams.append({
-            "name": name,
-            "url": url,
-        })
+        return [
+            item for item in data
+            if isinstance(item, dict)
+            and isinstance(item.get("url"), str)
+            and item["url"].strip()
+        ]
 
-    return streams
+    except FileNotFoundError:
+        return []
+    except (json.JSONDecodeError, OSError) as e:
+        print(f"⚠️ Could not read saved streams: {e}", flush=True)
+        return []
+
+
+def save_saved_streams(streams):
+    """Persist bookmarks without modifying Home Assistant options."""
+    temp_file = SAVED_STREAMS_FILE + ".tmp"
+
+    with open(temp_file, "w", encoding="utf-8") as f:
+        json.dump(streams, f, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+
+    os.replace(temp_file, SAVED_STREAMS_FILE)
 
 
 def save_configured_streams(stream_urls):
@@ -412,7 +431,7 @@ def save_configured_streams(stream_urls):
 def restart_addon():
     """Restart after the HTTP response has had time to return."""
     def restart_worker():
-        time.sleep(2)
+        time.sleep(4)
 
         try:
             supervisor_request(
@@ -552,17 +571,47 @@ class IngressHandler(BaseHTTPRequestHandler):
         try:
             configured_streams = load_saved_streams()
         except Exception as e:
-            print(f"⚠️ Could not load configured streams: {e}")
+            print(f"⚠️ Could not load saved streams: {e}", flush=True)
             configured_streams = []
 
+        try:
+            active_urls = set(get_configured_streams())
+        except Exception as e:
+            print(f"⚠️ Could not load active streams: {e}", flush=True)
+            active_urls = set()
+
         for stream in configured_streams:
-            if not isinstance(stream, dict):
+            name = html.escape(str(stream.get("name", "Unnamed station")))
+            url = str(stream.get("url", "")).strip()
+
+            if not url:
                 continue
 
-            name = html.escape(str(stream.get("name", "")))
-            url = str(stream.get("url", ""))
             safe_url = html.escape(url)
             safe_url_attr = html.escape(url, quote=True)
+
+            if url in active_urls:
+                recording_controls = f"""
+                    <form method="POST" style="margin-top:8px;">
+                        <input type="hidden" name="action" value="stop_recording">
+                        <input type="hidden" name="url" value="{safe_url_attr}">
+                        <button type="submit" style="background:#ff9800;">
+                            ⏹ Stop Recording
+                        </button>
+                    </form>
+                    <small style="color:#4caf50;">● Active recording</small>
+                """
+            else:
+                recording_controls = f"""
+                    <form method="POST" style="margin-top:8px;">
+                        <input type="hidden" name="action" value="start_recording">
+                        <input type="hidden" name="url" value="{safe_url_attr}">
+                        <button type="submit" style="background:#4caf50;">
+                            ▶ Start Recording
+                        </button>
+                    </form>
+                    <small style="color:#999;">Not recording</small>
+                """
 
             saved_stream_rows += f"""
             <li>
@@ -571,11 +620,12 @@ class IngressHandler(BaseHTTPRequestHandler):
                     <small style="margin-top:3px;overflow-wrap:anywhere;white-space:normal;">
                         {safe_url}
                     </small>
+                    {recording_controls}
                     <form method="POST" style="margin-top:8px;">
-                        <input type="hidden" name="action" value="remove_stream">
+                        <input type="hidden" name="action" value="remove_saved_stream">
                         <input type="hidden" name="url" value="{safe_url_attr}">
                         <button type="submit" style="background:#d32f2f;">
-                            Remove Stream
+                            Remove Saved Stream
                         </button>
                     </form>
                 </div>
@@ -723,7 +773,8 @@ class IngressHandler(BaseHTTPRequestHandler):
         <h2>📚 Saved Streams</h2>
 
         <p style="color:#aaa;">
-            Your previously configured radio stations are remembered here.
+            Save stations for later. Only stations you start recording will
+            be added to Home Assistant's active stream configuration.
         </p>
 
         <form method="POST" class="form-container">
@@ -798,59 +849,138 @@ class IngressHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         try:
-            content_length = int(
-                self.headers.get("Content-Length", 0)
-            )
-
+            content_length = int(self.headers.get("Content-Length", 0))
             body = self.rfile.read(content_length).decode("utf-8")
             form = parse_qs(body)
-
             action = form.get("action", ["purge_duplicates"])[0]
 
-            if action in ("save_stream", "remove_stream"):
-                urls = get_configured_streams()
-                changed = False
+            if action in ("save_stream", "remove_saved_stream"):
+                url = form.get("url", [""])[0].strip()
+                saved = load_saved_streams()
 
                 if action == "save_stream":
-                    url = form.get("url", [""])[0].strip()
+                    name = form.get("name", [""])[0].strip()
+
+                    if not name:
+                        raise ValueError("Station name is required")
 
                     if not url:
                         raise ValueError("Stream URL is required")
 
                     parsed = urlparse(url)
-
                     if parsed.scheme not in ("http", "https") or not parsed.netloc:
-                        raise ValueError(
-                            "Enter a valid HTTP or HTTPS stream URL"
-                        )
+                        raise ValueError("Enter a valid HTTP or HTTPS stream URL")
 
-                    if url not in urls:
-                        urls.append(url)
-                        save_configured_streams(urls)
-                        changed = True
-                        print(f"📚 Added configured stream: {url}")
+                    # Update the name if this URL is already bookmarked.
+                    existing = next(
+                        (item for item in saved if item.get("url") == url),
+                        None,
+                    )
+
+                    if existing:
+                        existing["name"] = name
                     else:
-                        print(f"ℹ️ Stream already configured: {url}")
+                        saved.append({"name": name, "url": url})
 
-                elif action == "remove_stream":
-                    url = form.get("url", [""])[0].strip()
+                    save_saved_streams(saved)
+                    print(f"📚 Saved station: {name} ({url})", flush=True)
 
-                    if url in urls:
-                        urls = [item for item in urls if item != url]
-                        save_configured_streams(urls)
-                        changed = True
-                        print(f"🗑️ Removed configured stream: {url}")
+                elif action == "remove_saved_stream":
+                    saved = [
+                        item for item in saved
+                        if item.get("url") != url
+                    ]
+                    save_saved_streams(saved)
+                    print(f"🗑️ Removed bookmark: {url}", flush=True)
 
+                # Bookmark changes never restart the add-on.
                 self.send_response(303)
                 self.send_header("Location", "/")
                 self.send_header("Content-Length", "0")
                 self.end_headers()
-
-                if changed:
-                    restart_addon()
-
                 return
-                
+
+            elif action in ("start_recording", "stop_recording"):
+                url = form.get("url", [""])[0].strip()
+
+                if not url:
+                    raise ValueError("Stream URL is required")
+
+                parsed = urlparse(url)
+                if parsed.scheme not in ("http", "https") or not parsed.netloc:
+                    raise ValueError("Enter a valid HTTP or HTTPS stream URL")
+
+                urls = get_configured_streams()
+                changed = False
+
+                if action == "start_recording":
+                    if url not in urls:
+                        urls.append(url)
+                        changed = True
+
+                elif action == "stop_recording":
+                    if url in urls:
+                        urls = [item for item in urls if item != url]
+                        changed = True
+
+                if not changed:
+                    self.send_response(303)
+                    self.send_header("Location", "/")
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+
+                # Save the live configuration before requesting a restart.
+                save_configured_streams(urls)
+
+                action_text = (
+                    "Recording started"
+                    if action == "start_recording"
+                    else "Recording stopped"
+                )
+
+                page = f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{action_text}</title>
+    <style>
+        body {{
+            font-family: sans-serif;
+            background: #111;
+            color: #eee;
+            padding: 30px;
+            text-align: center;
+        }}
+        a {{
+            color: #03a9f4;
+        }}
+    </style>
+</head>
+<body>
+    <h2>{action_text}</h2>
+    <p>The configuration has been saved.</p>
+    <p>The add-on will restart shortly to apply the change.</p>
+    <p>Wait for the add-on to come back online, then return to the Saved Streams page.</p>
+    <p><a href="/">Return to Saved Streams</a></p>
+</body>
+</html>""".encode("utf-8")
+
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=UTF-8")
+                self.send_header("Content-Length", str(len(page)))
+                self.end_headers()
+                self.wfile.write(page)
+                self.wfile.flush()
+
+                print(
+                    f"🔄 {action_text}; requesting add-on restart",
+                    flush=True,
+                )
+                restart_addon()
+                return
+
             elif action == "purge_duplicates":
                 subprocess.run(
                     [
@@ -862,9 +992,9 @@ class IngressHandler(BaseHTTPRequestHandler):
                             -delete
                         """,
                         "purge",
-                        BASE_OUTPUT_DIR
+                        BASE_OUTPUT_DIR,
                     ],
-                    check=False
+                    check=False,
                 )
 
             self.send_response(303)
@@ -875,14 +1005,14 @@ class IngressHandler(BaseHTTPRequestHandler):
         except Exception as e:
             import traceback
 
-            error_text = f"{type(e).__name__}: {e}"
-            print(f"❌ Web action failed: {error_text}", flush=True)
+            print(
+                f"❌ Web action failed: {type(e).__name__}: {e}",
+                flush=True,
+            )
             traceback.print_exc()
 
             message = (
-                "Could not update stream configuration.\n\n"
-                f"Error: {error_text}\n\n"
-                "Check the add-on logs for the full traceback."
+                f"Action failed: {type(e).__name__}: {e}"
             ).encode("utf-8")
 
             try:
