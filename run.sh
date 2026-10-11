@@ -2,7 +2,7 @@
 
 echo "========================================"
 echo "JAKE'S STATION RIPPER STARTING"
-echo "BUILD TEST: 2026-10-11-2"
+echo "BUILD TEST: 2026-10-11-3"
 echo "========================================"
 
 set -uo pipefail
@@ -125,17 +125,10 @@ watch_all_completed_files() {
     declare -a PROCESS_HISTORY
     local MAX_HISTORY=50
 
-    inotifywait \
-        --monitor \
-        --quiet \
-        --recursive \
-        --no-newline \
-        --event close_write \
-        --event moved_to \
-        --format '%e|%w%f%0' \
-        "$BASE_OUTPUT_DIR" | while IFS='|' read -r -d '' EVENT FILE; do
+    # FIXED: Replaced pipe layout with Process Substitution "< <(...)" 
+    # This mounts the engine in the primary shell context so flock works cleanly!
+    while IFS='|' read -r -d '' EVENT FILE; do
 
-        # Only mp3 right now
         case "$FILE" in
             *.mp3|*.MP3) ;;
             *) continue ;;
@@ -145,7 +138,6 @@ watch_all_completed_files() {
             */incomplete/*) continue ;;
         esac
 
-        # De-duplication 
         if [ "${PROCESSED_FILES["$FILE"]:-0}" = "1" ]; then
             continue
         fi
@@ -158,19 +150,14 @@ watch_all_completed_files() {
             PROCESS_HISTORY=("${PROCESS_HISTORY[@]:1}")
         fi
 
-        # Wait for files and tags to be done writing
         sleep 1.2
 
-        # Get filename
         FILE_NAME=$(basename "$FILE")
         REAL_PATH=$(find "$BASE_OUTPUT_DIR" -type f -name "$FILE_NAME" ! -path "*/incomplete/*" -print -quit 2>/dev/null)
 
-        # Check if it's really there
         [ -n "$REAL_PATH" ] && [ -f "$REAL_PATH" ] || continue
-        
         FILE_SIZE=$(stat -c%s "$REAL_PATH" 2>/dev/null || echo 0)
 
-        # Verify and delete
         if [ "$FILE_SIZE" -lt "$MIN_FILE_SIZE_BYTES" ]; then
             STREAM_SOURCE=$(basename "$(dirname "$REAL_PATH")")
 
@@ -192,8 +179,15 @@ watch_all_completed_files() {
                 fi
             fi
         fi
-    done
+    done < <(inotifywait --monitor --quiet --recursive --no-newline --event close_write --event moved_to --format '%e|%w%f%0' "$BASE_OUTPUT_DIR")
 }
+
+# Run watcher if not in continuous_recording mode
+GLOBAL_WATCHER_PID=""
+if [ "${CONTINUOUS_RECORDING}" != "true" ]; then
+    watch_all_completed_files &
+    GLOBAL_WATCHER_PID=$!
+fi
 
 # Track Background
 RIPPER_PIDS=()
@@ -240,11 +234,6 @@ for URL in "${STREAM_URLS[@]}"; do
             fi
 
            CLEANUP_PID=""
-
-            if [ "${CONTINUOUS_RECORDING}" != "true" ]; then
-                watch_all_completed_files &
-                CLEANUP_PID=$!
-            fi
             
             streamripper "${RIPPER_ARGS[@]}"
             
