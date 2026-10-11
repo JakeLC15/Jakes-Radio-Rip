@@ -243,7 +243,7 @@ for URL in "${STREAM_URLS[@]}"; do
            CLEANUP_PID=""
 
             if [ "${CONTINUOUS_RECORDING}" != "true" ]; then
-                watch_completed_files &
+                watch_all_completed_files &
                 CLEANUP_PID=$!
             fi
             
