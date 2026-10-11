@@ -19,6 +19,8 @@ RETRY_DELAY=10
 LOGGING_ENABLED="false"
 BASE_OUTPUT_DIR="/media/stationripper"
 CONTINUOUS_RECORDING="false"
+MIN_FILE_SIZE_MB="1.0"
+STREAM_URLS=()
 
 if [ -f "$CONFIG_PATH" ]; then
     BASE_OUTPUT_DIR=$(jq --raw-output '.output_dir // "/media/stationripper"' "$CONFIG_PATH")
@@ -35,16 +37,6 @@ fi
 
 mkdir -p "$BASE_OUTPUT_DIR"
 
-SAVED_STREAMS_FILE = os.environ.get(
-    "SAVED_STREAMS_FILE",
-    os.path.join(BASE_OUTPUT_DIR, "saved_streams.json")
-)
-
-if [ ! -f "$SAVED_STREAMS_FILE" ]; then
-    echo '{"streams":[]}' > "$SAVED_STREAMS_FILE"
-fi
-
-export SAVED_STREAMS_FILE
 STATUS_FILE="${BASE_OUTPUT_DIR}/status.json"
 STATUS_LOCK="${BASE_OUTPUT_DIR}/status.lock"
 START_TIME=$(date +%s)
@@ -102,16 +94,25 @@ run_duplicate_cleanup() {
 
 increment_ads_removed() {
     local count="$1"
-    local current
-    current=$(jq -r '.count // 0' "$ADS_REMOVED_FILE" 2>/dev/null || echo 0)
-    current=$((current + count))
-    
-    local tmp_file="${ADS_REMOVED_FILE}.$$"
-    if jq --argjson count "$current" '.count = $count' "$ADS_REMOVED_FILE" > "$tmp_file" 2>/dev/null; then
-        mv -f "$tmp_file" "$ADS_REMOVED_FILE"
-    else
-        echo "{\"count\": $current}" > "$ADS_REMOVED_FILE"
-    fi
+
+    (
+        flock 200
+
+        local current
+        current=$(jq -r '.count // 0' "$ADS_REMOVED_FILE" 2>/dev/null) || current=0
+        [[ "$current" =~ ^[0-9]+$ ]] || current=0
+        current=$((current + count))
+
+        local tmp_file="${ADS_REMOVED_FILE}.$$"
+
+        if jq --argjson count "$current" '.count = $count' \
+            "$ADS_REMOVED_FILE" > "$tmp_file" 2>/dev/null; then
+            mv -f "$tmp_file" "$ADS_REMOVED_FILE"
+        else
+            rm -f "$tmp_file"
+            echo "{\"count\": $current}" > "$ADS_REMOVED_FILE"
+        fi
+    ) 200>"$ADS_REMOVED_LOCK"
 }
 
 # File monitor
@@ -177,6 +178,10 @@ if [ "${CONTINUOUS_RECORDING}" != "true" ]; then
     watch_all_completed_files &
     GLOBAL_WATCHER_PID=$!
 fi
+
+STREAM_URLS_JSON=$(printf '%s\n' "${STREAM_URLS[@]}" |
+    jq -Rsc 'split("\n") | map(select(length > 0))')
+export STREAM_URLS_JSON
 
 # Track Background
 RIPPER_PIDS=()
@@ -466,6 +471,38 @@ class IngressHandler(BaseHTTPRequestHandler):
             except:
                 pass
 
+        saved_stream_rows = ""
+
+        for stream in load_saved_streams():
+            if not isinstance(stream, dict):
+                continue
+
+            name = html.escape(str(stream.get("name", "")))
+            url = str(stream.get("url", ""))
+            safe_url = html.escape(url)
+            safe_url_attr = html.escape(url, quote=True)
+
+            saved_stream_rows += f"""
+            <li>
+                <div style="display:flex;flex-direction:column;width:100%;">
+                    <strong>{name}</strong>
+                    <small style="margin-top:3px;overflow-wrap:anywhere;white-space:normal;">
+                        {safe_url}
+                    </small>
+                    <form method="POST" style="margin-top:8px;">
+                        <input type="hidden" name="action" value="remove_stream">
+                        <input type="hidden" name="url" value="{safe_url_attr}">
+                        <button type="submit" style="background:#d32f2f;">
+                            Remove Stream
+                        </button>
+                    </form>
+                </div>
+            </li>
+            """
+
+        if not saved_stream_rows:
+            saved_stream_rows = "<li>No saved streams yet</li>"
+            
         if not station_rows:
             station_rows = "<li>No active streams found</li>"
 
