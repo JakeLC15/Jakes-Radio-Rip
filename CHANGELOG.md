@@ -1,5 +1,8 @@
 # Changelog
 
+## 2026.10.11-1
+- **Fixed:** Bugs in small file removal.
+- **Added:** Save and reuse urls.
 ## 2026.10.08-1
 - **Added:** Configurable network port.
 - **Added:** Memory cleanup and limiting process. Keep it from growing too large.
