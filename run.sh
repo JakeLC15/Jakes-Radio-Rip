@@ -2,7 +2,7 @@
 
 echo "========================================"
 echo "JAKE'S STATION RIPPER STARTING"
-echo "BUILD TEST: 2026-10-11-3"
+echo "BUILD TEST: 2026-10-11-4"
 echo "========================================"
 
 set -uo pipefail
@@ -90,31 +90,18 @@ run_duplicate_cleanup() {
     echo "✅ Duplicate purge complete!"
 }
 
-# Files removed less than spec function
 increment_ads_removed() {
     local count="$1"
-    [ -n "${ADS_REMOVED_FILE:-}" ] || return 0
-
-    (
-        flock 200
-
-        # Read current count safely via piping to prevent file handle lockouts
-        local current
-        current=$(cat "$ADS_REMOVED_FILE" 2>/dev/null | jq -r '.count // 0' || echo 0)
-        [ -z "$current" ] && current=0
-
-        current=$((current + count))
-        local tmp_file="${ADS_REMOVED_FILE}.$$"
-
-        # Update JSON safely
-        if jq --argjson count "$current" '.count = $count' "$ADS_REMOVED_FILE" > "$tmp_file" 2>/dev/null; then
-            mv -f "$tmp_file" "$ADS_REMOVED_FILE"
-        else
-            rm -f "$tmp_file"
-            # Fallback direct generation if file gets corrupted or unreadable
-            echo "{\"count\": $current}" > "$ADS_REMOVED_FILE"
-        fi
-    ) 200>"$ADS_REMOVED_LOCK"
+    local current
+    current=$(jq -r '.count // 0' "$ADS_REMOVED_FILE" 2>/dev/null || echo 0)
+    current=$((current + count))
+    
+    local tmp_file="${ADS_REMOVED_FILE}.$$"
+    if jq --argjson count "$current" '.count = $count' "$ADS_REMOVED_FILE" > "$tmp_file" 2>/dev/null; then
+        mv -f "$tmp_file" "$ADS_REMOVED_FILE"
+    else
+        echo "{\"count\": $current}" > "$ADS_REMOVED_FILE"
+    fi
 }
 
 # Watch files to meet proper spec
@@ -125,9 +112,7 @@ watch_all_completed_files() {
     declare -a PROCESS_HISTORY
     local MAX_HISTORY=50
 
-    # FIXED: Replaced pipe layout with Process Substitution "< <(...)" 
-    # This mounts the engine in the primary shell context so flock works cleanly!
-    while IFS='|' read -r -d '' EVENT FILE; do
+    inotifywait --monitor --quiet --recursive --no-newline --event close_write --event moved_to --format '%e|%w%f%0' "$BASE_OUTPUT_DIR" | while IFS='|' read -r -d '' EVENT FILE; do
 
         case "$FILE" in
             *.mp3|*.MP3) ;;
@@ -179,10 +164,10 @@ watch_all_completed_files() {
                 fi
             fi
         fi
-    done < <(inotifywait --monitor --quiet --recursive --no-newline --event close_write --event moved_to --format '%e|%w%f%0' "$BASE_OUTPUT_DIR")
+    done
 }
 
-# Run watcher if not in continuous_recording mode
+# Start watcher if not in continuous_recording mode
 GLOBAL_WATCHER_PID=""
 if [ "${CONTINUOUS_RECORDING}" != "true" ]; then
     watch_all_completed_files &
