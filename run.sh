@@ -260,6 +260,9 @@ import subprocess
 import json
 import time
 import shutil
+import html
+
+from urllib.parse import parse_qs
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
@@ -273,7 +276,78 @@ ADS_REMOVED_FILE = os.environ.get(
 )
 
 MIN_FILE_SIZE_MB = float(os.environ.get("MIN_FILE_SIZE_MB", "1"))
+SAVED_STREAMS_FILE = os.environ.get(
+    "SAVED_STREAMS_FILE",
+    f"{BASE_OUTPUT_DIR}/saved_streams.json"
+)
 
+
+def load_saved_streams():
+    """Load saved stations and remember configured streams."""
+    try:
+        with open(SAVED_STREAMS_FILE, "r") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        data = {"streams": []}
+
+    if not isinstance(data, dict):
+        data = {"streams": []}
+
+    if not isinstance(data.get("streams"), list):
+        data["streams"] = []
+
+    streams = data["streams"]
+
+    # Automatically remember streams configured in Home Assistant.
+    try:
+        configured_urls = json.loads(
+            os.environ.get("STREAM_URLS_JSON", "[]")
+        )
+    except ValueError:
+        configured_urls = []
+
+    existing_urls = {
+        item.get("url")
+        for item in streams
+        if isinstance(item, dict)
+    }
+
+    changed = False
+
+    for url in configured_urls:
+        if not isinstance(url, str) or not url:
+            continue
+
+        if url in existing_urls:
+            continue
+
+        # Use the hostname as the default display name.
+        from urllib.parse import urlparse
+        name = urlparse(url).hostname or url
+
+        streams.append({
+            "name": name,
+            "url": url
+        })
+
+        existing_urls.add(url)
+        changed = True
+
+    if changed or not os.path.exists(SAVED_STREAMS_FILE):
+        save_saved_streams(streams)
+
+    return streams
+
+
+def save_saved_streams(streams):
+    """Write the saved library atomically."""
+    temp_file = SAVED_STREAMS_FILE + ".tmp"
+
+    with open(temp_file, "w") as f:
+        json.dump({"streams": streams}, f, indent=2)
+
+    os.replace(temp_file, SAVED_STREAMS_FILE)
+    
 class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
     daemon_threads = True
 
@@ -526,6 +600,40 @@ class IngressHandler(BaseHTTPRequestHandler):
         <ul id="recent-list">{recent_rows}</ul>
     </div>
 
+    <div class="card">
+        <h2>📚 Saved Streams</h2>
+
+        <p style="color:#aaa;">
+            Your previously configured radio stations are remembered here.
+        </p>
+
+        <form method="POST" class="form-container">
+            <input type="hidden" name="action" value="save_stream">
+
+            <label for="stream-name">Station Name</label>
+            <input id="stream-name" name="name"
+                   type="text" required
+                   placeholder="My Favorite Radio Station"
+                   style="width:100%;box-sizing:border-box;padding:12px;
+                          margin:8px 0 16px;background:#191919;
+                          color:#fff;border:1px solid #444;border-radius:4px;">
+
+            <label for="stream-url">Stream URL</label>
+            <input id="stream-url" name="url"
+                   type="url" required
+                   placeholder="https://example.com/radio"
+                   style="width:100%;box-sizing:border-box;padding:12px;
+                          margin:8px 0 16px;background:#191919;
+                          color:#fff;border:1px solid #444;border-radius:4px;">
+
+            <button type="submit" style="background:#4caf50;">
+                ➕ Save Stream
+            </button>
+        </form>
+
+        <ul>{saved_stream_rows}</ul>
+    </div>
+    
     <div class="card">
         <button class="btn-refresh" onclick="window.location.reload();">🔄 Refresh Live Data</button>
 
