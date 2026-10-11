@@ -2,7 +2,7 @@
 
 echo "========================================"
 echo "JAKE'S STATION RIPPER STARTING"
-echo "BUILD TEST: 2026-10-11-1"
+echo "BUILD TEST: 2026-10-11-2"
 echo "========================================"
 
 set -uo pipefail
@@ -123,7 +123,7 @@ watch_all_completed_files() {
 
     declare -A PROCESSED_FILES
     declare -a PROCESS_HISTORY
-    local MAX_HISTORY=100
+    local MAX_HISTORY=50
 
     inotifywait \
         --monitor \
@@ -145,7 +145,7 @@ watch_all_completed_files() {
             */incomplete/*) continue ;;
         esac
 
-        # 2. De-duplication 
+        # De-duplication 
         if [ "${PROCESSED_FILES["$FILE"]:-0}" = "1" ]; then
             continue
         fi
@@ -158,28 +158,33 @@ watch_all_completed_files() {
             PROCESS_HISTORY=("${PROCESS_HISTORY[@]:1}")
         fi
 
-        # 3. Streamripper file cool-down
+        # Wait for files and tags to be done writing
         sleep 1.2
 
-        [ -f "$FILE" ] || continue
-        FILE_SIZE=$(stat -c%s "$FILE" 2>/dev/null || echo 0)
+        # Get filename
+        FILE_NAME=$(basename "$FILE")
+        REAL_PATH=$(find "$BASE_OUTPUT_DIR" -type f -name "$FILE_NAME" ! -path "*/incomplete/*" -print -quit 2>/dev/null)
 
-        # 4. Evaluation and Deletion
+        # Check if it's really there
+        [ -n "$REAL_PATH" ] && [ -f "$REAL_PATH" ] || continue
+        
+        FILE_SIZE=$(stat -c%s "$REAL_PATH" 2>/dev/null || echo 0)
+
+        # Verify and delete
         if [ "$FILE_SIZE" -lt "$MIN_FILE_SIZE_BYTES" ]; then
-            FILE_NAME=$(basename "$FILE")
-            STREAM_SOURCE=$(basename "$(dirname "$FILE")")
+            STREAM_SOURCE=$(basename "$(dirname "$REAL_PATH")")
 
             echo "🧹 [$STREAM_SOURCE] Removing small MP3: $FILE_NAME (${FILE_SIZE} bytes)"
 
-            rm -f -- "$FILE" 2>/dev/null
+            rm -f -- "$REAL_PATH" 2>/dev/null
             
-            if [ ! -f "$FILE" ]; then
+            if [ ! -f "$REAL_PATH" ]; then
                 increment_ads_removed 1
                 echo "🗑️ Removed successfully"
             else
                 sleep 2.0
-                rm -f -- "$FILE"
-                if [ ! -f "$FILE" ]; then
+                rm -f -- "$REAL_PATH"
+                if [ ! -f "$REAL_PATH" ]; then
                     increment_ads_removed 1
                     echo "🗑️ Forced removal successful after cool-down"
                 else
@@ -189,12 +194,6 @@ watch_all_completed_files() {
         fi
     done
 }
-
-# Start the ONE global watcher to handle all parallel stream files safely
-if [ "${CONTINUOUS_RECORDING}" != "true" ]; then
-    watch_all_completed_files &
-    GLOBAL_WATCHER_PID=$!
-fi
 
 # Track Background
 RIPPER_PIDS=()
