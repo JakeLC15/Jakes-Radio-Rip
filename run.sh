@@ -2,7 +2,7 @@
 
 echo "========================================"
 echo "JAKE'S STATION RIPPER STARTING"
-echo "BUILD TEST: 2026-10-11-8"
+echo "BUILD TEST: 2026-10-11-9"
 echo "========================================"
 
 set -uo pipefail
@@ -31,8 +31,7 @@ if [ -f "$CONFIG_PATH" ]; then
 fi
 
 if [ ${#STREAM_URLS[@]} -eq 0 ]; then
-    echo "❌ Error: No URLs found in your 'streams' configuration list!"
-    exit 1
+    echo "⚠️ No streams configured. The Ingress UI will remain available so you can add one."
 fi
 
 mkdir -p "$BASE_OUTPUT_DIR"
@@ -266,8 +265,11 @@ import json
 import time
 import shutil
 import html
+import threading
+import urllib.request
+import urllib.error
 
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlparse
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
@@ -281,91 +283,129 @@ ADS_REMOVED_FILE = os.environ.get(
 )
 
 MIN_FILE_SIZE_MB = float(os.environ.get("MIN_FILE_SIZE_MB", "1"))
-SAVED_STREAMS_FILE = os.environ.get(
-    "SAVED_STREAMS_FILE",
-    f"{BASE_OUTPUT_DIR}/saved_streams.json"
-)
 
 CONFIG_PATH = "/data/options.json"
 
+SUPERVISOR_URL = "http://supervisor"
+ADDON_SLUG = "jakesstationrip"
+
+
+def supervisor_request(method, endpoint, payload=None):
+    """Make an authenticated request to the Supervisor API."""
+    token = os.environ.get("SUPERVISOR_TOKEN")
+
+    if not token:
+        raise RuntimeError("SUPERVISOR_TOKEN is not available")
+
+    body = None
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
+
+    if payload is not None:
+        body = json.dumps(payload).encode("utf-8")
+
+    request = urllib.request.Request(
+        f"{SUPERVISOR_URL}{endpoint}",
+        data=body,
+        headers=headers,
+        method=method,
+    )
+
+    with urllib.request.urlopen(request, timeout=20) as response:
+        result = json.loads(response.read().decode("utf-8"))
+
+    if result.get("result") == "error":
+        raise RuntimeError(result.get("message", "Supervisor API error"))
+
+    return result.get("data", result)
+
+
+def get_addon_options():
+    """Read the authoritative options stored by Home Assistant."""
+    data = supervisor_request(
+        "GET",
+        f"/addons/{ADDON_SLUG}/info",
+    )
+
+    options = data.get("options")
+
+    if not isinstance(options, dict):
+        raise RuntimeError(
+            "Supervisor did not return the add-on options"
+        )
+
+    return options
+
 
 def get_configured_streams():
-    """Read streams directly from the Home Assistant add-on configuration."""
-    try:
-        with open(CONFIG_PATH, "r") as f:
-            config = json.load(f)
+    """Return the configured stream URLs."""
+    options = get_addon_options()
+    streams = options.get("streams", [])
 
-        streams = config.get("streams", [])
-        if not isinstance(streams, list):
-            return []
-
-        return [
-            url.strip()
-            for url in streams
-            if isinstance(url, str) and url.strip()
-        ]
-
-    except (OSError, ValueError) as e:
-        print(f"⚠️ Could not read configured streams: {e}")
-        return []
-        
-def load_saved_streams():
-    """Merge Home Assistant configured streams with saved UI streams."""
-    try:
-        with open(SAVED_STREAMS_FILE, "r") as f:
-            data = json.load(f)
-    except (OSError, ValueError):
-        data = {"streams": []}
-
-    if not isinstance(data, dict):
-        data = {"streams": []}
-
-    streams = data.get("streams", [])
     if not isinstance(streams, list):
-        streams = []
+        return []
 
-    # Keep only valid saved stream entries.
-    streams = [
-        item for item in streams
-        if isinstance(item, dict)
-        and isinstance(item.get("url"), str)
-        and item["url"].strip()
-    ]
+    return list(dict.fromkeys(
+        url.strip()
+        for url in streams
+        if isinstance(url, str) and url.strip()
+    ))
 
-    existing_urls = {item["url"] for item in streams}
-    changed = False
 
-    from urllib.parse import urlparse
+def load_saved_streams():
+    """Build the Saved Streams display from the add-on configuration."""
+    streams = []
 
-    # Read the live Home Assistant configuration directly.
     for url in get_configured_streams():
-        if url in existing_urls:
-            continue
-
         name = urlparse(url).hostname or url
 
         streams.append({
             "name": name,
-            "url": url
+            "url": url,
         })
-
-        existing_urls.add(url)
-        changed = True
-
-    if changed or not os.path.exists(SAVED_STREAMS_FILE):
-        save_saved_streams(streams)
 
     return streams
 
 
-def save_saved_streams(streams):
-    """Write the saved library atomically."""
-    temp_file = SAVED_STREAMS_FILE + ".tmp"
+def save_configured_streams(stream_urls):
+    """Update the add-on options without overwriting other settings."""
+    options = get_addon_options()
 
-    with open(temp_file, "w") as f:
-        json.dump({"streams": streams}, f, indent=2)
+    # Keep the existing configuration and replace only the stream list.
+    options["streams"] = list(dict.fromkeys(
+        url.strip()
+        for url in stream_urls
+        if isinstance(url, str) and url.strip()
+    ))
 
-    os.replace(temp_file, SAVED_STREAMS_FILE)
+    supervisor_request(
+        "POST",
+        f"/addons/{ADDON_SLUG}/options",
+        {"options": options},
+    )
+
+
+def restart_addon():
+    """Restart after the HTTP response has had time to return."""
+    def restart_worker():
+        time.sleep(2)
+
+        try:
+            supervisor_request(
+                "POST",
+                f"/addons/{ADDON_SLUG}/restart",
+            )
+            print("🔄 Add-on restart requested successfully")
+
+        except Exception as e:
+            print(f"⚠️ Could not restart add-on: {e}")
+
+    threading.Thread(
+        target=restart_worker,
+        daemon=True,
+    ).start()
     
 class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
     daemon_threads = True
@@ -487,7 +527,13 @@ class IngressHandler(BaseHTTPRequestHandler):
 
         saved_stream_rows = ""
 
-        for stream in load_saved_streams():
+        try:
+            configured_streams = load_saved_streams()
+        except Exception as e:
+            print(f"⚠️ Could not load configured streams: {e}")
+            configured_streams = []
+
+        for stream in configured_streams:
             if not isinstance(stream, dict):
                 continue
 
@@ -739,43 +785,50 @@ class IngressHandler(BaseHTTPRequestHandler):
 
             action = form.get("action", ["purge_duplicates"])[0]
 
-            if action == "save_stream":
-                name = form.get("name", [""])[0].strip()
-                url = form.get("url", [""])[0].strip()
+            if action in ("save_stream", "remove_stream"):
+                urls = get_configured_streams()
+                changed = False
 
-                if name and url:
-                    streams = load_saved_streams()
+                if action == "save_stream":
+                    url = form.get("url", [""])[0].strip()
 
-                    # Do not save the same URL twice.
-                    if not any(
-                        item.get("url") == url
-                        for item in streams
-                        if isinstance(item, dict)
-                    ):
-                        streams.append({
-                            "name": name,
-                            "url": url
-                        })
+                    if not url:
+                        raise ValueError("Stream URL is required")
 
-                        save_saved_streams(streams)
+                    parsed = urlparse(url)
 
-                    print(f"📚 Saved stream: {name}")
+                    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+                        raise ValueError(
+                            "Enter a valid HTTP or HTTPS stream URL"
+                        )
 
-            elif action == "remove_stream":
-                url = form.get("url", [""])[0]
+                    if url not in urls:
+                        urls.append(url)
+                        save_configured_streams(urls)
+                        changed = True
+                        print(f"📚 Added configured stream: {url}")
+                    else:
+                        print(f"ℹ️ Stream already configured: {url}")
 
-                streams = load_saved_streams()
+                elif action == "remove_stream":
+                    url = form.get("url", [""])[0].strip()
 
-                streams = [
-                    item for item in streams
-                    if not isinstance(item, dict)
-                    or item.get("url") != url
-                ]
+                    if url in urls:
+                        urls = [item for item in urls if item != url]
+                        save_configured_streams(urls)
+                        changed = True
+                        print(f"🗑️ Removed configured stream: {url}")
 
-                save_saved_streams(streams)
+                self.send_response(303)
+                self.send_header("Location", "/")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
 
-                print(f"🗑️ Removed saved stream: {url}")
+                if changed:
+                    restart_addon()
 
+                return
+                
             elif action == "purge_duplicates":
                 subprocess.run(
                     [
@@ -792,14 +845,30 @@ class IngressHandler(BaseHTTPRequestHandler):
                     check=False
                 )
 
+            self.send_response(303)
+            self.send_header("Location", "/")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
         except Exception as e:
             print(f"⚠️ Web action failed: {e}")
 
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=UTF-8")
-        self.end_headers()
+            message = (
+                "Could not update the stream configuration. "
+                "Check the add-on logs for details."
+            ).encode("utf-8")
 
-        self.wfile.write(self._render_page().encode("utf-8"))
+            try:
+                self.send_response(500)
+                self.send_header(
+                    "Content-Type",
+                    "text/plain; charset=UTF-8",
+                )
+                self.send_header("Content-Length", str(len(message)))
+                self.end_headers()
+                self.wfile.write(message)
+            except Exception:
+                pass
 
     def do_GET(self):
         self.send_response(200)
