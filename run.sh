@@ -2,7 +2,7 @@
 
 echo "========================================"
 echo "JAKE'S STATION RIPPER STARTING"
-echo "BUILD TEST: 2026-10-11-4"
+echo "BUILD TEST: 2026-10-11-5"
 echo "========================================"
 
 set -uo pipefail
@@ -110,12 +110,12 @@ watch_all_completed_files() {
 
     declare -A PROCESSED_FILES
     declare -a PROCESS_HISTORY
-    local MAX_HISTORY=50
+    local MAX_HISTORY=500
 
     inotifywait --monitor --quiet --recursive --no-newline --event close_write --event moved_to --format '%e|%w%f%0' "$BASE_OUTPUT_DIR" | while IFS='|' read -r -d '' EVENT FILE; do
 
         case "$FILE" in
-            *.mp3|*.MP3) ;;
+            *.mp3|*.MP3|*.bak|*.tmp) ;;
             *) continue ;;
         esac
 
@@ -123,30 +123,46 @@ watch_all_completed_files() {
             */incomplete/*) continue ;;
         esac
 
-        if [ "${PROCESSED_FILES["$FILE"]:-0}" = "1" ]; then
+        FILE_NAME=$(basename "$FILE" | sed 's/\.bak//g' | sed 's/\.tmp//g')
+        STREAM_SOURCE=$(basename "$(dirname "$FILE")")
+
+        # Make tracking keys unique per stream
+        TRACKING_KEY="${STREAM_SOURCE}:${FILE_NAME}"
+
+        if [ "${PROCESSED_FILES["$TRACKING_KEY"]:-0}" = "1" ]; then
             continue
         fi
-        PROCESSED_FILES["$FILE"]=1
+        PROCESSED_FILES["$TRACKING_KEY"]=1
         
-        PROCESS_HISTORY+=("$FILE")
+        PROCESS_HISTORY+=("$TRACKING_KEY")
         if [ "${#PROCESS_HISTORY[@]}" -gt "$MAX_HISTORY" ]; then
-            local OLDEST_FILE="${PROCESS_HISTORY[0]}"
-            unset 'PROCESSED_FILES["$OLDEST_FILE"]'
+            # Get oldest item from index 0
+            local OLDEST_KEY="${PROCESS_HISTORY[0]}"
+            unset 'PROCESSED_FILES["$OLDEST_KEY"]'
             PROCESS_HISTORY=("${PROCESS_HISTORY[@]:1}")
         fi
 
-        sleep 1.2
+        sleep 2.0
 
-        FILE_NAME=$(basename "$FILE")
         REAL_PATH=$(find "$BASE_OUTPUT_DIR" -type f -name "$FILE_NAME" ! -path "*/incomplete/*" -print -quit 2>/dev/null)
 
         [ -n "$REAL_PATH" ] && [ -f "$REAL_PATH" ] || continue
+        
         FILE_SIZE=$(stat -c%s "$REAL_PATH" 2>/dev/null || echo 0)
+
+        if [ "$FILE_SIZE" -eq 0 ]; then
+            sleep 1.5
+            FILE_SIZE=$(stat -c%s "$REAL_PATH" 2>/dev/null || echo 0)
+        fi
+
+        [ "$FILE_SIZE" -gt 0 ] || continue
 
         if [ "$FILE_SIZE" -lt "$MIN_FILE_SIZE_BYTES" ]; then
             STREAM_SOURCE=$(basename "$(dirname "$REAL_PATH")")
 
-            echo "🧹 [$STREAM_SOURCE] Removing small MP3: $FILE_NAME (${FILE_SIZE} bytes)"
+            AD_FILE_SIZE_MB=$(awk -v bytes="$FILE_SIZE" 'BEGIN { printf "%.2f", bytes / 1024 / 1024 }')
+
+            echo "🧹 [$STREAM_SOURCE] Match Found: Removing small MP3: $FILE_NAME (${AD_FILE_SIZE_MB} MB)"
 
             rm -f -- "$REAL_PATH" 2>/dev/null
             
@@ -166,6 +182,7 @@ watch_all_completed_files() {
         fi
     done
 }
+
 
 # Start watcher if not in continuous_recording mode
 GLOBAL_WATCHER_PID=""
