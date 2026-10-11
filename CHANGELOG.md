@@ -1,5 +1,8 @@
 # Changelog
 
+## 2026.10.11-2
+- **Fixed:** Bug fix for url loading.
+- **Added:** More UI options.
 ## 2026.10.11-1
 - **Fixed:** Bugs in small file removal.
 - **Added:** Save and reuse urls.
