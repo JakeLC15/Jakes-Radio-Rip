@@ -2,7 +2,7 @@
 
 echo "========================================"
 echo "JAKE'S STATION RIPPER STARTING"
-echo "BUILD TEST: 2026-10-11-7"
+echo "BUILD TEST: 2026-10-11-8"
 echo "========================================"
 
 set -uo pipefail
@@ -35,6 +35,13 @@ fi
 
 mkdir -p "$BASE_OUTPUT_DIR"
 
+SAVED_STREAMS_FILE="${BASE_OUTPUT_DIR}/saved_streams.json"
+
+if [ ! -f "$SAVED_STREAMS_FILE" ]; then
+    echo '{"streams":[]}' > "$SAVED_STREAMS_FILE"
+fi
+
+export SAVED_STREAMS_FILE
 STATUS_FILE="${BASE_OUTPUT_DIR}/status.json"
 STATUS_LOCK="${BASE_OUTPUT_DIR}/status.lock"
 START_TIME=$(date +%s)
@@ -561,20 +568,76 @@ class IngressHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         try:
-            content_length = int(self.headers.get('Content-Length', 0))
-            if content_length > 0:
-                self.rfile.read(content_length)
-        except Exception:
-            pass
+            content_length = int(
+                self.headers.get("Content-Length", 0)
+            )
 
-        cmd = f"find '{BASE_OUTPUT_DIR}' -type f -name '*.mp3' | grep -E '\\([0-9]+\\)\\.mp3$' | tr '\\n' '\\0' | xargs -0 rm -f"
-        subprocess.run(cmd, shell=True)
+            body = self.rfile.read(content_length).decode("utf-8")
+            form = parse_qs(body)
+
+            action = form.get("action", ["purge_duplicates"])[0]
+
+            if action == "save_stream":
+                name = form.get("name", [""])[0].strip()
+                url = form.get("url", [""])[0].strip()
+
+                if name and url:
+                    streams = load_saved_streams()
+
+                    # Do not save the same URL twice.
+                    if not any(
+                        item.get("url") == url
+                        for item in streams
+                        if isinstance(item, dict)
+                    ):
+                        streams.append({
+                            "name": name,
+                            "url": url
+                        })
+
+                        save_saved_streams(streams)
+
+                    print(f"📚 Saved stream: {name}")
+
+            elif action == "remove_stream":
+                url = form.get("url", [""])[0]
+
+                streams = load_saved_streams()
+
+                streams = [
+                    item for item in streams
+                    if not isinstance(item, dict)
+                    or item.get("url") != url
+                ]
+
+                save_saved_streams(streams)
+
+                print(f"🗑️ Removed saved stream: {url}")
+
+            elif action == "purge_duplicates":
+                subprocess.run(
+                    [
+                        "bash", "-c",
+                        """
+                        find "$1" -type f -name '*.mp3' \
+                            -regextype posix-extended \
+                            -regex '.*\\([0-9]+\\)\\.mp3' \
+                            -delete
+                        """,
+                        "purge",
+                        BASE_OUTPUT_DIR
+                    ],
+                    check=False
+                )
+
+        except Exception as e:
+            print(f"⚠️ Web action failed: {e}")
 
         self.send_response(200)
-        self.send_header('Content-Type', 'text/html; charset=UTF-8')
+        self.send_header("Content-Type", "text/html; charset=UTF-8")
         self.end_headers()
 
-        self.wfile.write(self._render_page().encode('utf-8'))
+        self.wfile.write(self._render_page().encode("utf-8"))
 
     def do_GET(self):
         self.send_response(200)
