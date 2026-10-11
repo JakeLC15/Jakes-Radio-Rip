@@ -286,9 +286,31 @@ SAVED_STREAMS_FILE = os.environ.get(
     f"{BASE_OUTPUT_DIR}/saved_streams.json"
 )
 
+CONFIG_PATH = "/data/options.json"
 
+
+def get_configured_streams():
+    """Read streams directly from the Home Assistant add-on configuration."""
+    try:
+        with open(CONFIG_PATH, "r") as f:
+            config = json.load(f)
+
+        streams = config.get("streams", [])
+        if not isinstance(streams, list):
+            return []
+
+        return [
+            url.strip()
+            for url in streams
+            if isinstance(url, str) and url.strip()
+        ]
+
+    except (OSError, ValueError) as e:
+        print(f"⚠️ Could not read configured streams: {e}")
+        return []
+        
 def load_saved_streams():
-    """Load saved stations and remember configured streams."""
+    """Merge Home Assistant configured streams with saved UI streams."""
     try:
         with open(SAVED_STREAMS_FILE, "r") as f:
             data = json.load(f)
@@ -298,36 +320,28 @@ def load_saved_streams():
     if not isinstance(data, dict):
         data = {"streams": []}
 
-    if not isinstance(data.get("streams"), list):
-        data["streams"] = []
+    streams = data.get("streams", [])
+    if not isinstance(streams, list):
+        streams = []
 
-    streams = data["streams"]
-
-    # Automatically remember streams configured in Home Assistant.
-    try:
-        configured_urls = json.loads(
-            os.environ.get("STREAM_URLS_JSON", "[]")
-        )
-    except ValueError:
-        configured_urls = []
-
-    existing_urls = {
-        item.get("url")
-        for item in streams
+    # Keep only valid saved stream entries.
+    streams = [
+        item for item in streams
         if isinstance(item, dict)
-    }
+        and isinstance(item.get("url"), str)
+        and item["url"].strip()
+    ]
 
+    existing_urls = {item["url"] for item in streams}
     changed = False
 
-    for url in configured_urls:
-        if not isinstance(url, str) or not url:
-            continue
+    from urllib.parse import urlparse
 
+    # Read the live Home Assistant configuration directly.
+    for url in get_configured_streams():
         if url in existing_urls:
             continue
 
-        # Use the hostname as the default display name.
-        from urllib.parse import urlparse
         name = urlparse(url).hostname or url
 
         streams.append({
