@@ -2,7 +2,7 @@
 
 echo "========================================"
 echo "JAKE'S STATION RIPPER STARTING"
-echo "BUILD TEST: 2026-10-11-9"
+echo "BUILD TEST: 2026-10-11-10"
 echo "========================================"
 
 set -uo pipefail
@@ -287,15 +287,16 @@ MIN_FILE_SIZE_MB = float(os.environ.get("MIN_FILE_SIZE_MB", "1"))
 CONFIG_PATH = "/data/options.json"
 
 SUPERVISOR_URL = "http://supervisor"
-ADDON_SLUG = "jakesstationrip"
-
+ADDON_SLUG = "self"
 
 def supervisor_request(method, endpoint, payload=None):
     """Make an authenticated request to the Supervisor API."""
     token = os.environ.get("SUPERVISOR_TOKEN")
 
     if not token:
-        raise RuntimeError("SUPERVISOR_TOKEN is not available")
+        raise RuntimeError(
+            "SUPERVISOR_TOKEN is missing. Check add-on API permissions."
+        )
 
     body = None
     headers = {
@@ -313,14 +314,35 @@ def supervisor_request(method, endpoint, payload=None):
         method=method,
     )
 
-    with urllib.request.urlopen(request, timeout=20) as response:
-        result = json.loads(response.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            raw = response.read().decode("utf-8")
+    except urllib.error.HTTPError as e:
+        details = e.read().decode("utf-8", errors="replace")
+        raise RuntimeError(
+            f"Supervisor HTTP {e.code} for {endpoint}: {details}"
+        ) from e
+    except urllib.error.URLError as e:
+        raise RuntimeError(
+            f"Cannot reach Supervisor at {SUPERVISOR_URL}: {e}"
+        ) from e
+
+    try:
+        result = json.loads(raw)
+    except json.JSONDecodeError:
+        raise RuntimeError(
+            f"Supervisor returned non-JSON data for {endpoint}: {raw[:500]}"
+        )
 
     if result.get("result") == "error":
-        raise RuntimeError(result.get("message", "Supervisor API error"))
+        raise RuntimeError(
+            result.get("message", "Supervisor API error")
+        )
+
+    if result.get("result") not in (None, "ok"):
+        raise RuntimeError(f"Unexpected Supervisor response: {result}")
 
     return result.get("data", result)
-
 
 def get_addon_options():
     """Read the authoritative options stored by Home Assistant."""
@@ -851,11 +873,16 @@ class IngressHandler(BaseHTTPRequestHandler):
             self.end_headers()
 
         except Exception as e:
-            print(f"⚠️ Web action failed: {e}")
+            import traceback
+
+            error_text = f"{type(e).__name__}: {e}"
+            print(f"❌ Web action failed: {error_text}", flush=True)
+            traceback.print_exc()
 
             message = (
-                "Could not update the stream configuration. "
-                "Check the add-on logs for details."
+                "Could not update stream configuration.\n\n"
+                f"Error: {error_text}\n\n"
+                "Check the add-on logs for the full traceback."
             ).encode("utf-8")
 
             try:
