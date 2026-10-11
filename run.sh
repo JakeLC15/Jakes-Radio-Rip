@@ -104,85 +104,63 @@ increment_ads_removed() {
     fi
 }
 
-# Setup named pipe paths
-PIPE_PATH="/tmp/stationripper_events.fifo"
-rm -f "$PIPE_PATH"
-mkfifo "$PIPE_PATH"
-
-# Watch files to meet proper spec
+# File monitor
 watch_all_completed_files() {
-    echo "👀 Global watcher started. Monitoring via FIFO: $BASE_OUTPUT_DIR"
+    echo "👀 MP3 cleanup started: $BASE_OUTPUT_DIR"
 
-    declare -A PROCESSED_FILES
-    declare -a PROCESS_HISTORY
-    local MAX_HISTORY=500
+    inotifywait \
+        --monitor \
+        --quiet \
+        --recursive \
+        --event close_write \
+        --event moved_to \
+        --format '%w%f' \
+        "$BASE_OUTPUT_DIR" |
+    while IFS= read -r REAL_PATH; do
 
-    inotifywait --monitor --quiet --recursive --no-newline --event close_write --event moved_to --format '%w|%f%0' "$BASE_OUTPUT_DIR" > "$PIPE_PATH" &
-    INOTIFY_PID=$!
-
-    # Read events line by line from the persistent system named pipe channel
-    while IFS='|' read -r -d '' WATCHED_DIR FILE_NAME; do
-
-        case "$FILE_NAME" in
+        case "$REAL_PATH" in
             *.mp3|*.MP3) ;;
             *) continue ;;
         esac
 
-        case "$WATCHED_DIR" in
+        case "$REAL_PATH" in
             */incomplete/*) continue ;;
         esac
 
-        REAL_PATH="${WATCHED_DIR}${FILE_NAME}"
-
-        if [ "${PROCESSED_FILES["$REAL_PATH"]:-0}" = "1" ]; then
-            continue
-        fi
-        PROCESSED_FILES["$REAL_PATH"]=1
-        
-        PROCESS_HISTORY+=("$REAL_PATH")
-        if [ "${#PROCESS_HISTORY[@]}" -gt "$MAX_HISTORY" ]; then
-            local OLDEST_PATH="${PROCESS_HISTORY[0]}"
-            unset 'PROCESSED_FILES["$OLDEST_PATH"]'
-            PROCESS_HISTORY=("${PROCESS_HISTORY[@]:1}")
-        fi
-
-        # Process the file deletion checks in the background so the FIFO channel stays cleared
         (
-            sleep 2.5
+            # Allow Streamripper to finish
+            sleep 2
 
-            if [ -f "$REAL_PATH" ]; then
-                FILE_SIZE=$(stat -c%s "$REAL_PATH" 2>/dev/null || echo 0)
+            [ -f "$REAL_PATH" ] || exit 0
 
-                if [ "$FILE_SIZE" -eq 0 ]; then
-                    sleep 1.5
-                    FILE_SIZE=$(stat -c%s "$REAL_PATH" 2>/dev/null || echo 0)
-                fi
+            FILE_SIZE=$(stat -c%s "$REAL_PATH" 2>/dev/null) || exit 0
 
-                if [ "$FILE_SIZE" -gt 0 ] && [ "$FILE_SIZE" -lt "$MIN_FILE_SIZE_BYTES" ]; then
-                    STREAM_SOURCE=$(basename "$WATCHED_DIR")
-                    FILE_SIZE_MB=$(awk -v bytes="$FILE_SIZE" 'BEGIN { printf "%.2f", bytes / 1024 / 1024 }')
+            [ "$FILE_SIZE" -gt 0 ] || exit 0
+            [ "$FILE_SIZE" -lt "$MIN_FILE_SIZE_BYTES" ] || exit 0
 
-                    echo "🧹 [$STREAM_SOURCE] Match Found: Removing small MP3: $FILE_NAME (${FILE_SIZE_MB} MB)"
+            sleep 3
 
-                    rm -f -- "$REAL_PATH" 2>/dev/null
-                    
-                    if [ ! -f "$REAL_PATH" ]; then
-                        increment_ads_removed 1
-                        echo "🗑️ Removed successfully"
-                    else
-                        sleep 1.5
-                        if rm -f -- "$REAL_PATH"; then
-                            increment_ads_removed 1
-                            echo "🗑️ Forced removal successful"
-                        else
-                            echo "❌ ERROR: System locked path: $FILE_NAME"
-                        fi
-                    fi
-                fi
+            [ -f "$REAL_PATH" ] || exit 0
+
+            CURRENT_SIZE=$(stat -c%s "$REAL_PATH" 2>/dev/null) || exit 0
+
+            [ "$CURRENT_SIZE" -eq "$FILE_SIZE" ] || exit 0
+
+            STREAM_SOURCE=$(basename "$(dirname "$REAL_PATH")")
+
+            echo "🧹 [$STREAM_SOURCE] Removing small MP3: $REAL_PATH"
+
+            if rm -f -- "$REAL_PATH" && [ ! -e "$REAL_PATH" ]; then
+                increment_ads_removed 1
+                echo "🗑️ Removed successfully"
+            else
+                echo "⚠️ Could not remove: $REAL_PATH"
             fi
         ) &
-    done < "$PIPE_PATH"
+
+    done
 }
+
 # Start watcher if not in continuous_recording mode
 GLOBAL_WATCHER_PID=""
 if [ "${CONTINUOUS_RECORDING}" != "true" ]; then
