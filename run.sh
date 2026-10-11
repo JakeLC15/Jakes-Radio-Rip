@@ -171,6 +171,7 @@ watch_all_completed_files() {
             fi
         ) &
     done
+}
 
 # Start watcher if not in continuous_recording mode
 GLOBAL_WATCHER_PID=""
