@@ -2,7 +2,7 @@
 
 echo "========================================"
 echo "JAKE'S STATION RIPPER STARTING"
-echo "BUILD TEST: 2026-10-11-8"
+echo "BUILD TEST: 2026-10-12-YTDLP-1"
 echo "========================================"
 
 set -uo pipefail
@@ -19,6 +19,8 @@ RETRY_DELAY=10
 LOGGING_ENABLED="false"
 BASE_OUTPUT_DIR="/media/stationripper"
 CONTINUOUS_RECORDING="false"
+MIN_FILE_SIZE_MB="1.0"
+STREAM_URLS=()
 
 if [ -f "$CONFIG_PATH" ]; then
     BASE_OUTPUT_DIR=$(jq --raw-output '.output_dir // "/media/stationripper"' "$CONFIG_PATH")
@@ -29,19 +31,11 @@ if [ -f "$CONFIG_PATH" ]; then
 fi
 
 if [ ${#STREAM_URLS[@]} -eq 0 ]; then
-    echo "❌ Error: No URLs found in your 'streams' configuration list!"
-    exit 1
+    echo "⚠️ No streams configured. The Ingress UI will remain available so you can add one."
 fi
 
 mkdir -p "$BASE_OUTPUT_DIR"
 
-SAVED_STREAMS_FILE="${SAVED_STREAMS_FILE:-$BASE_OUTPUT_DIR/saved_streams.json}"
-
-if [ ! -f "$SAVED_STREAMS_FILE" ]; then
-    echo '{"streams":[]}' > "$SAVED_STREAMS_FILE"
-fi
-
-export SAVED_STREAMS_FILE
 STATUS_FILE="${BASE_OUTPUT_DIR}/status.json"
 STATUS_LOCK="${BASE_OUTPUT_DIR}/status.lock"
 START_TIME=$(date +%s)
@@ -99,16 +93,25 @@ run_duplicate_cleanup() {
 
 increment_ads_removed() {
     local count="$1"
-    local current
-    current=$(jq -r '.count // 0' "$ADS_REMOVED_FILE" 2>/dev/null || echo 0)
-    current=$((current + count))
-    
-    local tmp_file="${ADS_REMOVED_FILE}.$$"
-    if jq --argjson count "$current" '.count = $count' "$ADS_REMOVED_FILE" > "$tmp_file" 2>/dev/null; then
-        mv -f "$tmp_file" "$ADS_REMOVED_FILE"
-    else
-        echo "{\"count\": $current}" > "$ADS_REMOVED_FILE"
-    fi
+
+    (
+        flock 200
+
+        local current
+        current=$(jq -r '.count // 0' "$ADS_REMOVED_FILE" 2>/dev/null) || current=0
+        [[ "$current" =~ ^[0-9]+$ ]] || current=0
+        current=$((current + count))
+
+        local tmp_file="${ADS_REMOVED_FILE}.$$"
+
+        if jq --argjson count "$current" '.count = $count' \
+            "$ADS_REMOVED_FILE" > "$tmp_file" 2>/dev/null; then
+            mv -f "$tmp_file" "$ADS_REMOVED_FILE"
+        else
+            rm -f "$tmp_file"
+            echo "{\"count\": $current}" > "$ADS_REMOVED_FILE"
+        fi
+    ) 200>"$ADS_REMOVED_LOCK"
 }
 
 # File monitor
@@ -174,6 +177,10 @@ if [ "${CONTINUOUS_RECORDING}" != "true" ]; then
     watch_all_completed_files &
     GLOBAL_WATCHER_PID=$!
 fi
+
+STREAM_URLS_JSON=$(printf '%s\n' "${STREAM_URLS[@]}" |
+    jq -Rsc 'split("\n") | map(select(length > 0))')
+export STREAM_URLS_JSON
 
 # Track Background
 RIPPER_PIDS=()
@@ -258,11 +265,76 @@ import json
 import time
 import shutil
 import html
+import threading
+import urllib.request
+import urllib.error
 
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlparse
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
+from threading import Lock, Thread
+import re
+
+def update_download_state(status, message):
+    with DOWNLOAD_STATE_LOCK:
+        DOWNLOAD_STATE.update({"status": status, "message": str(message)[:500], "updated": time.time()})
+
+def is_youtube_url(url):
+    try:
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").lower()
+        return parsed.scheme == "https" and (host in YOUTUBE_HOSTS or host.endswith(".youtube.com"))
+    except Exception:
+        return False
+
+def run_youtube_download(url, playlist):
+    global DOWNLOAD_PROCESS
+    if not DOWNLOAD_LOCK.acquire(blocking=False):
+        update_download_state("Busy", "A YouTube download is already running. Please wait.")
+        return
+    try:
+        os.makedirs(YOUTUBE_DIR, exist_ok=True)
+        update_download_state("Running", "Preparing audio download…")
+        output_template = os.path.join(YOUTUBE_DIR, "%(title).180B [%(id)s].%(ext)s")
+        command = [
+            "yt-dlp", "--no-warnings", "--newline", "--ignore-errors" if playlist else "--no-playlist",
+            "--extract-audio", "--audio-format", "mp3", "--audio-quality", "0",
+            "--output", output_template, "--restrict-filenames", url
+        ]
+        # A playlist request is intentionally explicit; a single-video request never expands playlists.
+        if playlist:
+            command = [arg for arg in command if arg != "--ignore-errors"]
+            command.insert(1, "--yes-playlist")
+        else:
+            command = [arg for arg in command if arg != "--no-playlist"]
+            command.insert(1, "--no-playlist")
+        with open(os.path.join(YOUTUBE_DIR, "download.log"), "a", encoding="utf-8") as log:
+            log.write("\n--- Download started: " + datetime.now().isoformat(timespec="seconds") + " ---\n")
+            log.flush()
+            proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+            DOWNLOAD_PROCESS = proc
+            tail = []
+            for line in proc.stdout:
+                log.write(line)
+                log.flush()
+                stripped = line.strip()
+                if stripped:
+                    tail.append(stripped)
+                    tail = tail[-4:]
+                    if "[download]" in stripped or "ExtractAudio" in stripped or "Destination:" in stripped:
+                        update_download_state("Running", stripped)
+            code = proc.wait()
+        DOWNLOAD_PROCESS = None
+        if code == 0:
+            update_download_state("Completed", "Download finished. Files saved in the YouTube library folder.")
+        else:
+            update_download_state("Failed", "yt-dlp exited with code " + str(code) + (" — " + " | ".join(tail[-2:]) if tail else ". Check download.log."))
+    except Exception as exc:
+        DOWNLOAD_PROCESS = None
+        update_download_state("Failed", str(exc))
+    finally:
+        DOWNLOAD_LOCK.release()
 
 BASE_OUTPUT_DIR = os.environ.get("BASE_OUTPUT_DIR", "/media/stationripper")
 STATUS_FILE = os.environ.get("STATUS_FILE", f"{BASE_OUTPUT_DIR}/status.json")
@@ -273,77 +345,176 @@ ADS_REMOVED_FILE = os.environ.get(
 )
 
 MIN_FILE_SIZE_MB = float(os.environ.get("MIN_FILE_SIZE_MB", "1"))
-SAVED_STREAMS_FILE = os.environ.get(
-    "SAVED_STREAMS_FILE",
-    f"{BASE_OUTPUT_DIR}/saved_streams.json"
-)
 
+CONFIG_PATH = "/data/options.json"
+SAVED_STREAMS_FILE = "/data/saved_streams.json"
+SUPERVISOR_URL = "http://supervisor"
+ADDON_SLUG = "self"
+YOUTUBE_DIR = os.path.join(BASE_OUTPUT_DIR, "YouTube")
+DOWNLOAD_LOCK = Lock()
+DOWNLOAD_STATE_LOCK = Lock()
+DOWNLOAD_STATE = {"status": "Idle", "message": "Ready for a YouTube URL", "updated": time.time()}
+DOWNLOAD_PROCESS = None
+YOUTUBE_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be", "www.youtube-nocookie.com", "youtube-nocookie.com"}
 
-def load_saved_streams():
-    """Load saved stations and remember configured streams."""
-    try:
-        with open(SAVED_STREAMS_FILE, "r") as f:
-            data = json.load(f)
-    except (OSError, ValueError):
-        data = {"streams": []}
+def supervisor_request(method, endpoint, payload=None):
+    """Make an authenticated request to the Supervisor API."""
+    token = os.environ.get("SUPERVISOR_TOKEN")
 
-    if not isinstance(data, dict):
-        data = {"streams": []}
-
-    if not isinstance(data.get("streams"), list):
-        data["streams"] = []
-
-    streams = data["streams"]
-
-    # Automatically remember streams configured in Home Assistant.
-    try:
-        configured_urls = json.loads(
-            os.environ.get("STREAM_URLS_JSON", "[]")
+    if not token:
+        raise RuntimeError(
+            "SUPERVISOR_TOKEN is missing. Check add-on API permissions."
         )
-    except ValueError:
-        configured_urls = []
 
-    existing_urls = {
-        item.get("url")
-        for item in streams
-        if isinstance(item, dict)
+    body = None
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
     }
 
-    changed = False
+    if payload is not None:
+        body = json.dumps(payload).encode("utf-8")
 
-    for url in configured_urls:
-        if not isinstance(url, str) or not url:
-            continue
+    request = urllib.request.Request(
+        f"{SUPERVISOR_URL}{endpoint}",
+        data=body,
+        headers=headers,
+        method=method,
+    )
 
-        if url in existing_urls:
-            continue
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            raw = response.read().decode("utf-8")
+    except urllib.error.HTTPError as e:
+        details = e.read().decode("utf-8", errors="replace")
+        raise RuntimeError(
+            f"Supervisor HTTP {e.code} for {endpoint}: {details}"
+        ) from e
+    except urllib.error.URLError as e:
+        raise RuntimeError(
+            f"Cannot reach Supervisor at {SUPERVISOR_URL}: {e}"
+        ) from e
 
-        # Use the hostname as the default display name.
-        from urllib.parse import urlparse
-        name = urlparse(url).hostname or url
+    try:
+        result = json.loads(raw)
+    except json.JSONDecodeError:
+        raise RuntimeError(
+            f"Supervisor returned non-JSON data for {endpoint}: {raw[:500]}"
+        )
 
-        streams.append({
-            "name": name,
-            "url": url
-        })
+    if result.get("result") == "error":
+        raise RuntimeError(
+            result.get("message", "Supervisor API error")
+        )
 
-        existing_urls.add(url)
-        changed = True
+    if result.get("result") not in (None, "ok"):
+        raise RuntimeError(f"Unexpected Supervisor response: {result}")
 
-    if changed or not os.path.exists(SAVED_STREAMS_FILE):
-        save_saved_streams(streams)
+    return result.get("data", result)
 
-    return streams
+def get_addon_options():
+    """Read the authoritative options stored by Home Assistant."""
+    data = supervisor_request(
+        "GET",
+        f"/addons/{ADDON_SLUG}/info",
+    )
+
+    options = data.get("options")
+
+    if not isinstance(options, dict):
+        raise RuntimeError(
+            "Supervisor did not return the add-on options"
+        )
+
+    return options
+
+
+def get_configured_streams():
+    """Return the configured stream URLs."""
+    options = get_addon_options()
+    streams = options.get("streams", [])
+
+    if not isinstance(streams, list):
+        return []
+
+    return list(dict.fromkeys(
+        url.strip()
+        for url in streams
+        if isinstance(url, str) and url.strip()
+    ))
+
+def load_saved_streams():
+    """Load bookmarked stations, independently of active streams."""
+    try:
+        with open(SAVED_STREAMS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        if not isinstance(data, list):
+            return []
+
+        return [
+            item for item in data
+            if isinstance(item, dict)
+            and isinstance(item.get("url"), str)
+            and item["url"].strip()
+        ]
+
+    except FileNotFoundError:
+        return []
+    except (json.JSONDecodeError, OSError) as e:
+        print(f"⚠️ Could not read saved streams: {e}", flush=True)
+        return []
 
 
 def save_saved_streams(streams):
-    """Write the saved library atomically."""
+    """Persist bookmarks without modifying Home Assistant options."""
     temp_file = SAVED_STREAMS_FILE + ".tmp"
 
-    with open(temp_file, "w") as f:
-        json.dump({"streams": streams}, f, indent=2)
+    with open(temp_file, "w", encoding="utf-8") as f:
+        json.dump(streams, f, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
 
     os.replace(temp_file, SAVED_STREAMS_FILE)
+
+
+def save_configured_streams(stream_urls):
+    """Update the add-on options without overwriting other settings."""
+    options = get_addon_options()
+
+    # Keep the existing configuration and replace only the stream list.
+    options["streams"] = list(dict.fromkeys(
+        url.strip()
+        for url in stream_urls
+        if isinstance(url, str) and url.strip()
+    ))
+
+    supervisor_request(
+        "POST",
+        f"/addons/{ADDON_SLUG}/options",
+        {"options": options},
+    )
+
+
+def restart_addon():
+    """Restart after the HTTP response has had time to return."""
+    def restart_worker():
+        time.sleep(4)
+
+        try:
+            supervisor_request(
+                "POST",
+                f"/addons/{ADDON_SLUG}/restart",
+            )
+            print("🔄 Add-on restart requested successfully")
+
+        except Exception as e:
+            print(f"⚠️ Could not restart add-on: {e}")
+
+    threading.Thread(
+        target=restart_worker,
+        daemon=True,
+    ).start()
     
 class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
     daemon_threads = True
@@ -463,6 +634,75 @@ class IngressHandler(BaseHTTPRequestHandler):
             except:
                 pass
 
+        saved_stream_rows = ""
+
+        try:
+            configured_streams = load_saved_streams()
+        except Exception as e:
+            print(f"⚠️ Could not load saved streams: {e}", flush=True)
+            configured_streams = []
+
+        try:
+            active_urls = set(get_configured_streams())
+        except Exception as e:
+            print(f"⚠️ Could not load active streams: {e}", flush=True)
+            active_urls = set()
+
+        for stream in configured_streams:
+            name = html.escape(str(stream.get("name", "Unnamed station")))
+            url = str(stream.get("url", "")).strip()
+
+            if not url:
+                continue
+
+            safe_url = html.escape(url)
+            safe_url_attr = html.escape(url, quote=True)
+
+            if url in active_urls:
+                recording_controls = f"""
+                    <form method="POST" style="margin-top:8px;">
+                        <input type="hidden" name="action" value="stop_recording">
+                        <input type="hidden" name="url" value="{safe_url_attr}">
+                        <button type="submit" style="background:#ff9800;">
+                            ⏹ Stop Recording
+                        </button>
+                    </form>
+                    <small style="color:#4caf50;">● Active recording</small>
+                """
+            else:
+                recording_controls = f"""
+                    <form method="POST" style="margin-top:8px;">
+                        <input type="hidden" name="action" value="start_recording">
+                        <input type="hidden" name="url" value="{safe_url_attr}">
+                        <button type="submit" style="background:#4caf50;">
+                            ▶ Start Recording
+                        </button>
+                    </form>
+                    <small style="color:#999;">Not recording</small>
+                """
+
+            saved_stream_rows += f"""
+            <li>
+                <div style="display:flex;flex-direction:column;width:100%;">
+                    <strong>{name}</strong>
+                    <small style="margin-top:3px;overflow-wrap:anywhere;white-space:normal;">
+                        {safe_url}
+                    </small>
+                    {recording_controls}
+                    <form method="POST" style="margin-top:8px;">
+                        <input type="hidden" name="action" value="remove_saved_stream">
+                        <input type="hidden" name="url" value="{safe_url_attr}">
+                        <button type="submit" style="background:#d32f2f;">
+                            Remove Saved Stream
+                        </button>
+                    </form>
+                </div>
+            </li>
+            """
+
+        if not saved_stream_rows:
+            saved_stream_rows = "<li>No saved streams yet</li>"
+            
         if not station_rows:
             station_rows = "<li>No active streams found</li>"
 
@@ -536,6 +776,27 @@ class IngressHandler(BaseHTTPRequestHandler):
     </div>
 
     <div class="card">
+        <h2>⬇️ YouTube Audio Download</h2>
+        <p style="color:#aaa;">Download audio from videos you own or are authorized to download. Individual videos are the default; tick playlist mode to process a playlist.</p>
+        <form method="POST" class="form-container">
+            <input type="hidden" name="action" value="youtube_download">
+            <label for="youtube-url">YouTube video or playlist URL</label>
+            <input id="youtube-url" name="url" type="url" required
+                   placeholder="https://www.youtube.com/watch?v=…"
+                   style="width:100%;box-sizing:border-box;padding:12px;margin:8px 0 12px;background:#191919;color:#fff;border:1px solid #444;border-radius:4px;">
+            <label style="display:flex;align-items:center;gap:8px;margin:0 0 12px;">
+                <input type="checkbox" name="playlist" value="yes"> Download playlist (batch mode)
+            </label>
+            <button type="submit" style="background:#03a9f4;">Download Audio</button>
+        </form>
+        <div style="background:#191919;padding:12px;border-radius:6px;margin-top:8px;">
+            <strong id="youtube-status">{html.escape(DOWNLOAD_STATE.get("status", "Idle"))}</strong>
+            <p id="youtube-message" style="overflow-wrap:anywhere;margin-bottom:0;">{html.escape(DOWNLOAD_STATE.get("message", "Ready"))}</p>
+            <small>Output: {html.escape(YOUTUBE_DIR)}</small>
+        </div>
+    </div>
+
+    <div class="card">
         <h2>🎵 Current Track</h2>
         <div class="current" id="current-song">{current_song}</div>
     </div>
@@ -601,7 +862,8 @@ class IngressHandler(BaseHTTPRequestHandler):
         <h2>📚 Saved Streams</h2>
 
         <p style="color:#aaa;">
-            Your previously configured radio stations are remembered here.
+            Save stations for later. Only stations you start recording will
+            be added to Home Assistant's active stream configuration.
         </p>
 
         <form method="POST" class="form-container">
@@ -642,6 +904,132 @@ class IngressHandler(BaseHTTPRequestHandler):
     </div>
 
     <script>
+        // Submit Ingress forms without navigating the Home Assistant frontend.
+        document.addEventListener("submit", async (event) => {{
+            const form = event.target;
+
+            if (!(form instanceof HTMLFormElement)) return;
+            if (form.method.toLowerCase() !== "post") return;
+
+            event.preventDefault();
+
+            const submitButton = event.submitter;
+            const originalText = submitButton ? submitButton.textContent : "";
+
+            if (submitButton) {{
+                submitButton.disabled = true;
+                submitButton.textContent = "Please wait...";
+            }}
+
+            let notice = document.getElementById("form-notice");
+
+            if (!notice) {{
+                notice = document.createElement("div");
+                notice.id = "form-notice";
+                notice.style.cssText =
+                    "position:sticky;top:0;background:#263238;color:#fff;" +
+                    "padding:14px;margin-bottom:16px;border-radius:6px;" +
+                    "z-index:9999;overflow-wrap:anywhere;";
+                document.body.prepend(notice);
+            }}
+
+            const formData = new FormData(form);
+            const action = formData.get("action") || "purge_duplicates";
+
+            try {{
+                notice.textContent = "Submitting request...";
+
+                const response = await fetch(form.action || window.location.href, {{
+                    method: "POST",
+                    body: new URLSearchParams(formData),
+                    credentials: "same-origin",
+                    redirect: "follow"
+                }});
+
+                if (!response.ok) {{
+                    const details = await response.text();
+                    throw new Error(
+                        "HTTP " + response.status + ": " + details.slice(0, 500)
+                    );
+                }}
+
+                if (action === "save_stream") {{
+                    notice.textContent =
+                        "Station saved. Updating the saved station list...";
+
+                    // Refresh the page data without navigating away from Ingress.
+                    const pageResponse = await fetch(window.location.href, {{
+                        credentials: "same-origin"
+                    }});
+
+                    if (pageResponse.ok) {{
+                        const pageText = await pageResponse.text();
+                        const parser = new DOMParser();
+                        const newDoc = parser.parseFromString(pageText, "text/html");
+                        const newCard = Array.from(
+                            newDoc.querySelectorAll(".card")
+                        ).find(card =>
+                            card.querySelector("h2")?.textContent.includes("Saved Streams")
+                        );
+                        const oldCard = Array.from(
+                            document.querySelectorAll(".card")
+                        ).find(card =>
+                            card.querySelector("h2")?.textContent.includes("Saved Streams")
+                        );
+
+                        if (newCard && oldCard) {{
+                            oldCard.replaceWith(newCard);
+                        }}
+                    }}
+
+                    notice.textContent = "Station saved successfully.";
+                }} else if (action === "remove_saved_stream") {{
+                    notice.textContent = "Saved station removed.";
+
+                    const pageResponse = await fetch(window.location.href, {{
+                        credentials: "same-origin"
+                    }});
+
+                    if (pageResponse.ok) {{
+                        const pageText = await pageResponse.text();
+                        const parser = new DOMParser();
+                        const newDoc = parser.parseFromString(pageText, "text/html");
+                        const newCard = Array.from(
+                            newDoc.querySelectorAll(".card")
+                        ).find(card =>
+                            card.querySelector("h2")?.textContent.includes("Saved Streams")
+                        );
+                        const oldCard = Array.from(
+                            document.querySelectorAll(".card")
+                        ).find(card =>
+                            card.querySelector("h2")?.textContent.includes("Saved Streams")
+                        );
+
+                        if (newCard && oldCard) {{
+                            oldCard.replaceWith(newCard);
+                        }}
+                    }}
+                }} else if (
+                    action === "start_recording" ||
+                    action === "stop_recording"
+                ) {{
+                    notice.textContent =
+                        "Configuration saved. The add-on is restarting. " +
+                        "Wait for it to come back online before refreshing this page.";
+                }} else {{
+                    notice.textContent = "Request completed.";
+                }}
+            }} catch (error) {{
+                notice.textContent =
+                    "Request failed: " + (error?.message || String(error));
+            }} finally {{
+                if (submitButton && document.contains(submitButton)) {{
+                    submitButton.disabled = false;
+                    submitButton.textContent = originalText;
+                }}
+            }}
+        }});
+        
         setInterval(async () => {{
             try {{
                 const res = await fetch(window.location.href);
@@ -655,7 +1043,7 @@ class IngressHandler(BaseHTTPRequestHandler):
                     'station-list', 'current-song', 'stat-total', 'stat-today', 
                     'stat-used', 'stat-free', 'stat-total-disk', 'stat-percent',
                     'stat-ads-removed',
-                    'stat-uptime', 'reconnect-list', 'recent-list'
+                    'stat-uptime', 'reconnect-list', 'recent-list', 'youtube-status', 'youtube-message'
                 ];
 
                 // Swap out the full contents exactly as they appear on the server
@@ -676,51 +1064,152 @@ class IngressHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         try:
-            content_length = int(
-                self.headers.get("Content-Length", 0)
-            )
-
+            content_length = int(self.headers.get("Content-Length", 0))
             body = self.rfile.read(content_length).decode("utf-8")
             form = parse_qs(body)
-
             action = form.get("action", ["purge_duplicates"])[0]
 
-            if action == "save_stream":
-                name = form.get("name", [""])[0].strip()
+            if action == "youtube_download":
+                url = form.get("url", [""])[0].strip()
+                playlist = form.get("playlist", [""])[0] == "yes"
+                if not is_youtube_url(url):
+                    raise ValueError("Enter an HTTPS URL from youtube.com or youtu.be")
+                if DOWNLOAD_LOCK.locked():
+                    raise ValueError("A YouTube download is already running. Please wait for it to finish.")
+                update_download_state("Queued", "Download queued.")
+                Thread(target=run_youtube_download, args=(url, playlist), daemon=True).start()
+                self.send_response(303)
+                self.send_header("Location", "/")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+
+            if action in ("save_stream", "remove_saved_stream"):
+                url = form.get("url", [""])[0].strip()
+                saved = load_saved_streams()
+
+                if action == "save_stream":
+                    name = form.get("name", [""])[0].strip()
+
+                    if not name:
+                        raise ValueError("Station name is required")
+
+                    if not url:
+                        raise ValueError("Stream URL is required")
+
+                    parsed = urlparse(url)
+                    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+                        raise ValueError("Enter a valid HTTP or HTTPS stream URL")
+
+                    # Update the name if this URL is already bookmarked.
+                    existing = next(
+                        (item for item in saved if item.get("url") == url),
+                        None,
+                    )
+
+                    if existing:
+                        existing["name"] = name
+                    else:
+                        saved.append({"name": name, "url": url})
+
+                    save_saved_streams(saved)
+                    print(f"📚 Saved station: {name} ({url})", flush=True)
+
+                elif action == "remove_saved_stream":
+                    saved = [
+                        item for item in saved
+                        if item.get("url") != url
+                    ]
+                    save_saved_streams(saved)
+                    print(f"🗑️ Removed bookmark: {url}", flush=True)
+
+                # Bookmark changes never restart the add-on.
+                self.send_response(303)
+                self.send_header("Location", "/")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+
+            elif action in ("start_recording", "stop_recording"):
                 url = form.get("url", [""])[0].strip()
 
-                if name and url:
-                    streams = load_saved_streams()
+                if not url:
+                    raise ValueError("Stream URL is required")
 
-                    # Do not save the same URL twice.
-                    if not any(
-                        item.get("url") == url
-                        for item in streams
-                        if isinstance(item, dict)
-                    ):
-                        streams.append({
-                            "name": name,
-                            "url": url
-                        })
+                parsed = urlparse(url)
+                if parsed.scheme not in ("http", "https") or not parsed.netloc:
+                    raise ValueError("Enter a valid HTTP or HTTPS stream URL")
 
-                        save_saved_streams(streams)
+                urls = get_configured_streams()
+                changed = False
 
-                    print(f"📚 Saved stream: {name}")
+                if action == "start_recording":
+                    if url not in urls:
+                        urls.append(url)
+                        changed = True
 
-            elif action == "remove_stream":
-                url = form.get("url", [""])[0]
+                elif action == "stop_recording":
+                    if url in urls:
+                        urls = [item for item in urls if item != url]
+                        changed = True
 
-                streams = load_saved_streams()
+                if not changed:
+                    self.send_response(303)
+                    self.send_header("Location", "/")
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
 
-                streams = [
-                    item for item in streams
-                    if not isinstance(item, dict)
-                    or item.get("url") != url
-                ]
+                # Save the live configuration before requesting a restart.
+                save_configured_streams(urls)
 
-                save_saved_streams(streams)
+                action_text = (
+                    "Recording started"
+                    if action == "start_recording"
+                    else "Recording stopped"
+                )
 
-                print(f"🗑️ Removed saved stream: {url}")
+                page = f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{action_text}</title>
+    <style>
+        body {{
+            font-family: sans-serif;
+            background: #111;
+            color: #eee;
+            padding: 30px;
+            text-align: center;
+        }}
+        a {{
+            color: #03a9f4;
+        }}
+    </style>
+</head>
+<body>
+    <h2>{action_text}</h2>
+    <p>The configuration has been saved.</p>
+    <p>The add-on will restart shortly to apply the change.</p>
+    <p>Wait for the add-on to come back online, then return to the Saved Streams page.</p>
+    <p><a href="/">Return to Saved Streams</a></p>
+</body>
+</html>""".encode("utf-8")
+
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=UTF-8")
+                self.send_header("Content-Length", str(len(page)))
+                self.end_headers()
+                self.wfile.write(page)
+                self.wfile.flush()
+
+                print(
+                    f"🔄 {action_text}; requesting add-on restart",
+                    flush=True,
+                )
+                restart_addon()
+                return
 
             elif action == "purge_duplicates":
                 subprocess.run(
@@ -733,19 +1222,40 @@ class IngressHandler(BaseHTTPRequestHandler):
                             -delete
                         """,
                         "purge",
-                        BASE_OUTPUT_DIR
+                        BASE_OUTPUT_DIR,
                     ],
-                    check=False
+                    check=False,
                 )
 
+            self.send_response(303)
+            self.send_header("Location", "/")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
         except Exception as e:
-            print(f"⚠️ Web action failed: {e}")
+            import traceback
 
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=UTF-8")
-        self.end_headers()
+            print(
+                f"❌ Web action failed: {type(e).__name__}: {e}",
+                flush=True,
+            )
+            traceback.print_exc()
 
-        self.wfile.write(self._render_page().encode("utf-8"))
+            message = (
+                f"Action failed: {type(e).__name__}: {e}"
+            ).encode("utf-8")
+
+            try:
+                self.send_response(500)
+                self.send_header(
+                    "Content-Type",
+                    "text/plain; charset=UTF-8",
+                )
+                self.send_header("Content-Length", str(len(message)))
+                self.end_headers()
+                self.wfile.write(message)
+            except Exception:
+                pass
 
     def do_GET(self):
         self.send_response(200)
