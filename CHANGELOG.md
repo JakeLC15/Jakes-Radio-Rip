@@ -1,5 +1,7 @@
 # Changelog
 
+## 2026.10.12-1
+- **Added:** YouTube audio support. 
 ## 2026.10.11-2
 - **Fixed:** Bug fix for url loading.
 - **Added:** More UI options.

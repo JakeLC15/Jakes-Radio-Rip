@@ -2,7 +2,7 @@
 
 echo "========================================"
 echo "JAKE'S STATION RIPPER STARTING"
-echo "BUILD TEST: 2026-10-11-11"
+echo "BUILD TEST: 2026-10-12-1"
 echo "========================================"
 
 set -uo pipefail
@@ -273,6 +273,98 @@ from urllib.parse import parse_qs, urlparse
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
+from threading import Lock, Thread
+import re
+
+def update_download_state(status, message):
+    with DOWNLOAD_STATE_LOCK:
+        DOWNLOAD_STATE.update({"status": status, "message": str(message)[:500], "updated": time.time()})
+
+def is_youtube_url(url):
+    try:
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").lower()
+        return parsed.scheme == "https" and (host in YOUTUBE_HOSTS or host.endswith(".youtube.com"))
+    except Exception:
+        return False
+
+def run_youtube_download(url, playlist):
+    global DOWNLOAD_PROCESS
+    if not DOWNLOAD_LOCK.acquire(blocking=False):
+        update_download_state("Busy", "A YouTube download is already running. Please wait.")
+        return
+    try:
+        # YouTube may require an authenticated browser session. Export a Netscape-format
+        # cookies.txt to /share/youtube_cookies.txt; never bake credentials into the image.
+        cookies_file = "/share/youtube_cookies.txt"
+        cookie_args = ["--cookies", cookies_file] if os.path.isfile(cookies_file) and os.path.getsize(cookies_file) > 0 else []
+
+        # Put each playlist into a descriptive, date-stamped folder. Re-downloading the
+        # same playlist on the same day reuses that folder instead of scattering files.
+        if playlist:
+            update_download_state("Running", "Reading playlist title…")
+            metadata_cmd = ["yt-dlp", "--no-warnings", "--flat-playlist", "--dump-single-json", "--skip-download"]
+            metadata_cmd.extend(cookie_args)
+            metadata_cmd.extend(["--yes-playlist", url])
+            try:
+                metadata = subprocess.run(metadata_cmd, capture_output=True, text=True, timeout=90, check=False)
+                playlist_title = json.loads(metadata.stdout).get("title", "") if metadata.returncode == 0 and metadata.stdout.strip() else ""
+            except Exception:
+                playlist_title = ""
+            # Keep names portable and prevent URL metadata from creating nested paths.
+            safe_title = re.sub(r'[\\/:*?"<>|]+', "", playlist_title)
+            safe_title = re.sub(r"\s+", " ", safe_title).strip(" .-_")[:100]
+            if not safe_title:
+                safe_title = "Playlist"
+            batch_name = safe_title + " - " + datetime.now().strftime("%Y-%m-%d")
+            download_dir = os.path.join(YOUTUBE_DIR, "Batch", batch_name)
+        else:
+            download_dir = YOUTUBE_DIR
+
+        os.makedirs(download_dir, exist_ok=True)
+        update_download_state(
+            "Running",
+            ("Preparing batch download in " + os.path.relpath(download_dir, YOUTUBE_DIR) + "…") if playlist else "Preparing audio download…"
+        )
+        output_template = os.path.join(download_dir, "%(title).180B.%(ext)s")
+        command = ["yt-dlp", "--no-warnings", "--newline"]
+        command.extend(cookie_args)
+        # Keep individual-video mode from expanding a URL into its playlist.
+        command.append("--yes-playlist" if playlist else "--no-playlist")
+        if playlist:
+            command.append("--ignore-errors")
+        command.extend([
+            "--extract-audio", "--audio-format", "mp3", "--audio-quality", "0",
+            "--replace-in-metadata", "title", "_", " ",
+            "--output", output_template, url
+        ])
+        log_path = os.path.join(download_dir, "download.log")
+        with open(log_path, "a", encoding="utf-8") as log:
+            log.write("\n--- Download started: " + datetime.now().isoformat(timespec="seconds") + " ---\n")
+            log.flush()
+            proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+            DOWNLOAD_PROCESS = proc
+            tail = []
+            for line in proc.stdout:
+                log.write(line)
+                log.flush()
+                stripped = line.strip()
+                if stripped:
+                    tail.append(stripped)
+                    tail = tail[-4:]
+                    if "[download]" in stripped or "ExtractAudio" in stripped or "Destination:" in stripped:
+                        update_download_state("Running", stripped)
+            code = proc.wait()
+        DOWNLOAD_PROCESS = None
+        if code == 0:
+            update_download_state("Completed", ("Batch download finished. Files saved in " + os.path.relpath(download_dir, YOUTUBE_DIR) + ".") if playlist else "Download finished. Files saved in the YouTube library folder.")
+        else:
+            update_download_state("Failed", "yt-dlp exited with code " + str(code) + (" — " + " | ".join(tail[-2:]) if tail else ". Check download.log."))
+    except Exception as exc:
+        DOWNLOAD_PROCESS = None
+        update_download_state("Failed", str(exc))
+    finally:
+        DOWNLOAD_LOCK.release()
 
 BASE_OUTPUT_DIR = os.environ.get("BASE_OUTPUT_DIR", "/media/stationripper")
 STATUS_FILE = os.environ.get("STATUS_FILE", f"{BASE_OUTPUT_DIR}/status.json")
@@ -288,6 +380,12 @@ CONFIG_PATH = "/data/options.json"
 SAVED_STREAMS_FILE = "/data/saved_streams.json"
 SUPERVISOR_URL = "http://supervisor"
 ADDON_SLUG = "self"
+YOUTUBE_DIR = os.path.join(BASE_OUTPUT_DIR, "YouTube")
+DOWNLOAD_LOCK = Lock()
+DOWNLOAD_STATE_LOCK = Lock()
+DOWNLOAD_STATE = {"status": "Idle", "message": "Ready for a YouTube URL", "updated": time.time()}
+DOWNLOAD_PROCESS = None
+YOUTUBE_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be", "www.youtube-nocookie.com", "youtube-nocookie.com"}
 
 def supervisor_request(method, endpoint, payload=None):
     """Make an authenticated request to the Supervisor API."""
@@ -803,7 +901,28 @@ class IngressHandler(BaseHTTPRequestHandler):
 
         <ul>{saved_stream_rows}</ul>
     </div>
-    
+
+    <div class="card">
+        <h2>⬇️ YouTube Audio Download</h2>
+        <p style="color:#aaa;">Download audio from videos you own or are authorized to download. Individual videos are the default; tick playlist mode to process a playlist. If YouTube asks you to sign in, place a Netscape-format cookies export at <code>/share/youtube_cookies.txt</code> and restart the download. Keep this file private; it grants access to your signed-in session.</p>
+        <form method="POST" class="form-container">
+            <input type="hidden" name="action" value="youtube_download">
+            <label for="youtube-url">YouTube video or playlist URL</label>
+            <input id="youtube-url" name="url" type="url" required
+                   placeholder="https://www.youtube.com/watch?v=…"
+                   style="width:100%;box-sizing:border-box;padding:12px;margin:8px 0 12px;background:#191919;color:#fff;border:1px solid #444;border-radius:4px;">
+            <label style="display:flex;align-items:center;gap:8px;margin:0 0 12px;">
+                <input type="checkbox" name="playlist" value="yes"> Download playlist (batch mode)
+            </label>
+            <button type="submit" style="background:#03a9f4;">Download Audio</button>
+        </form>
+        <div style="background:#191919;padding:12px;border-radius:6px;margin-top:8px;">
+            <strong id="youtube-status">{html.escape(DOWNLOAD_STATE.get("status", "Idle"))}</strong>
+            <p id="youtube-message" style="overflow-wrap:anywhere;margin-bottom:0;">{html.escape(DOWNLOAD_STATE.get("message", "Ready"))}</p>
+            <small>Output: {html.escape(YOUTUBE_DIR)}</small>
+        </div>
+    </div>
+
     <div class="card">
         <button class="btn-refresh" onclick="window.location.reload();">🔄 Refresh Live Data</button>
 
@@ -954,7 +1073,7 @@ class IngressHandler(BaseHTTPRequestHandler):
                     'station-list', 'current-song', 'stat-total', 'stat-today', 
                     'stat-used', 'stat-free', 'stat-total-disk', 'stat-percent',
                     'stat-ads-removed',
-                    'stat-uptime', 'reconnect-list', 'recent-list'
+                    'stat-uptime', 'reconnect-list', 'recent-list', 'youtube-status', 'youtube-message'
                 ];
 
                 // Swap out the full contents exactly as they appear on the server
@@ -979,6 +1098,21 @@ class IngressHandler(BaseHTTPRequestHandler):
             body = self.rfile.read(content_length).decode("utf-8")
             form = parse_qs(body)
             action = form.get("action", ["purge_duplicates"])[0]
+
+            if action == "youtube_download":
+                url = form.get("url", [""])[0].strip()
+                playlist = form.get("playlist", [""])[0] == "yes"
+                if not is_youtube_url(url):
+                    raise ValueError("Enter an HTTPS URL from youtube.com or youtu.be")
+                if DOWNLOAD_LOCK.locked():
+                    raise ValueError("A YouTube download is already running. Please wait for it to finish.")
+                update_download_state("Queued", "Download queued.")
+                Thread(target=run_youtube_download, args=(url, playlist), daemon=True).start()
+                self.send_response(303)
+                self.send_header("Location", "/")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
 
             if action in ("save_stream", "remove_saved_stream"):
                 url = form.get("url", [""])[0].strip()
@@ -1212,4 +1346,5 @@ python3 /tmp/server.py &
 PYTHON_PID=$!
 
 # Wait for Python server
+
 wait "$PYTHON_PID"

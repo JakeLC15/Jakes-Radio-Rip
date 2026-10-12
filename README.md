@@ -30,6 +30,17 @@ https://github.com/qbus00/streamripper.git
   
 - Continuous recording mode for podcast or live stream type stations. Configure the url and run an automation in Home Assistant to start and stop the app.
 
+- Find stream urls here: https://streamurl.link/
+
+- YouTube download is for your own uploaded video or authorized youtube content.
+Save individual audio or a playlist(batch mode).
+May require youtube_cookies.txt file for authorization. **Don't share this file.**
+
+- Get cookie file with firefox extension https://addons.mozilla.org/en-US/firefox/addon/yt-dlp-cookie-exporter/
+Rename it to youtube_cookies.txt and put it in share folder. /share/youtube_cookies.txt
+
+- YouTube download is not so lightweight. 20-25% cpu on rpi4 compared to 0.2% with multiple streamripper.
+
 ## Installation
 
 - The easy way!
@@ -53,6 +64,8 @@ homeassistant:
   media_dirs:
     local: /media
 ```
+
+### NAS or external drive recommended. 
 
 ## Example
 
@@ -125,6 +138,6 @@ Uptime
     📁 Badlands Classic Rock · ⏱️ 09:52:47
 
 
->While this is a working addon, it is still a work in progress and features may be added and removed.
+>While this is a working addon, it is still a work in progress and features may be added and removed. It also relies on multiple outside sources that are constantly changing and updating!
 
 **Let me know if you run into any bugs or have feature suggestions!**
