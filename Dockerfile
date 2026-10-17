@@ -37,10 +37,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && update-ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# yt-dlp is installed from PyPI so the add-on can receive current extractor fixes.
-RUN python3 -m pip install --no-cache-dir --break-system-packages "yt-dlp[default]"
+RUN python3 -m pip install --no-cache-dir --break-system-packages \
+    "yt-dlp[default]" \
+    musicbrainzngs \
+    mutagen
 
 COPY --from=builder /src/streamripper/build/streamripper /usr/local/bin/streamripper
+COPY tagger.py /tagger.py
 COPY run.sh /run.sh
 RUN chmod +x /run.sh
 RUN echo "STREAMRIPPER BUILD:" && /usr/local/bin/streamripper --version || true

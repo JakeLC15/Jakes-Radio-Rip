@@ -2,7 +2,7 @@
 
 echo "========================================"
 echo "JAKE'S STATION RIPPER STARTING"
-echo "BUILD TEST: 2026-10-12-1"
+echo "BUILD TEST: 2026-10-17-1"
 echo "========================================"
 
 set -uo pipefail
@@ -20,6 +20,7 @@ LOGGING_ENABLED="false"
 BASE_OUTPUT_DIR="/media/stationripper"
 CONTINUOUS_RECORDING="false"
 MIN_FILE_SIZE_MB="1.0"
+MUSICBRAINZ_TAGGING="true"  # Set default tracking fallback state
 STREAM_URLS=()
 
 if [ -f "$CONFIG_PATH" ]; then
@@ -27,6 +28,7 @@ if [ -f "$CONFIG_PATH" ]; then
     LOGGING_ENABLED=$(jq --raw-output '.logging // false' "$CONFIG_PATH")
     MIN_FILE_SIZE_MB=$(jq --raw-output '.min_file_size_mb // 1' "$CONFIG_PATH")
     CONTINUOUS_RECORDING=$(jq --raw-output '.continuous_recording // false' "$CONFIG_PATH")
+    MUSICBRAINZ_TAGGING=$(jq --raw-output '.musicbrainz_tagging // true' "$CONFIG_PATH") # Read UI option choice
     mapfile -t STREAM_URLS < <(jq --raw-output '.streams[] // empty' "$CONFIG_PATH")
 fi
 
@@ -39,11 +41,11 @@ mkdir -p "$BASE_OUTPUT_DIR"
 STATUS_FILE="${BASE_OUTPUT_DIR}/status.json"
 STATUS_LOCK="${BASE_OUTPUT_DIR}/status.lock"
 START_TIME=$(date +%s)
-#MIN_FILE_SIZE_BYTES=$(awk "BEGIN {printf \"%d\", $MIN_FILE_SIZE_MB * 1024 * 1024}")
 MIN_FILE_SIZE_BYTES=$(awk -v mb="$MIN_FILE_SIZE_MB" \
     'BEGIN { printf "%.0f", mb * 1024 * 1024 }')
     
 echo "Minimum retained MP3 size: ${MIN_FILE_SIZE_MB} MB"
+echo "MusicBrainz Auto-Tagging Enabled: ${MUSICBRAINZ_TAGGING}" # Log configuration visibility
 echo "{}" > "$STATUS_FILE"
 
 ADS_REMOVED_FILE="${BASE_OUTPUT_DIR}/ads_removed.json"
@@ -220,13 +222,17 @@ for URL in "${STREAM_URLS[@]}"; do
                     -u "WinampMPEG/5.0"
                     --no-cue
                 )
+                
+                if [ "${MUSICBRAINZ_TAGGING}" = "true" ]; then
+                    RIPPER_ARGS+=(-E 'python3 /tagger.py "%d/%f" "%t"')
+                fi
             fi
             
             if [ "${LOGGING_ENABLED}" != "true" ]; then
                 RIPPER_ARGS+=(--quiet)
             fi
 
-           CLEANUP_PID=""
+            CLEANUP_PID=""
             
             streamripper "${RIPPER_ARGS[@]}"
             
