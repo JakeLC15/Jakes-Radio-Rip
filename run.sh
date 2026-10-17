@@ -2,7 +2,7 @@
 
 echo "========================================"
 echo "JAKE'S STATION RIPPER STARTING"
-echo "BUILD TEST: 2026-10-17-1"
+echo "BUILD TEST: 2026-10-17-2"
 echo "========================================"
 
 set -uo pipefail
@@ -1306,7 +1306,7 @@ if __name__ == '__main__':
 EOF
 
 # Export environment paths to python sub-process scope
-export BASE_OUTPUT_DIR STATUS_FILE START_TIME ADS_REMOVED_FILE MIN_FILE_SIZE_MB
+export BASE_OUTPUT_DIR STATUS_FILE START_TIME ADS_REMOVED_FILE MIN_FILE_SIZE_MB MUSICBRAINZ_TAGGING
 
 # Shutdown function
 shutdown_handler() {
