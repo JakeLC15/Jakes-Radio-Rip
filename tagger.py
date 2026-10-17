@@ -1,8 +1,7 @@
 import sys
 import time
 import os
-import flock  # Built-in or fcntl can be used, but standard fcntl is safer for Linux
-import fcntl
+import fcntl  # Safe and built-in for native Linux file locking
 import musicbrainzngs
 from mutagen.easyid3 import EasyID3
 
@@ -21,10 +20,18 @@ def clean_and_tag_file(file_path, raw_title):
     
     print(f"[{raw_title}] Waiting for MusicBrainz API slot...")
     
+    # Ensure the lock file exists before attempting to open/lock it
+    if not os.path.exists(lock_file_path):
+        try:
+            with open(lock_file_path, "w") as f:
+                f.write("")
+        except Exception:
+            pass
+
     with open(lock_file_path, "w") as lock_file:
         fcntl.flock(lock_file, fcntl.LOCK_EX) 
         
-        # Mandatory
+        # Mandatory 1-request-per-second limit compliance + padding
         time.sleep(2.0)
 
         try:
