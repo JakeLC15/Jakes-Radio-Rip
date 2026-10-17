@@ -53,6 +53,7 @@ ADS_REMOVED_LOCK="${BASE_OUTPUT_DIR}/ads_removed.lock"
 
 export ADS_REMOVED_FILE
 export ADS_REMOVED_LOCK
+export MUSICBRAINZ_TAGGING # FIX: Export to thread subshell visibility context
 
 if [ ! -f "$ADS_REMOVED_FILE" ]; then
     echo '{"count":0}' > "$ADS_REMOVED_FILE"
@@ -224,7 +225,6 @@ for URL in "${STREAM_URLS[@]}"; do
                 )
                 
                 if [ "${MUSICBRAINZ_TAGGING}" = "true" ]; then
-                    # Split into discrete array parameters so streamripper reads them perfectly
                     RIPPER_ARGS+=(-E "python3 /tagger.py %d/%f %t")
                 fi
             fi
@@ -239,7 +239,6 @@ for URL in "${STREAM_URLS[@]}"; do
             
             RC=$?
             
-            # Stop the file watcher after Streamripper exits
             if [ -n "$CLEANUP_PID" ]; then
                 kill "$CLEANUP_PID" 2>/dev/null || true
                 wait "$CLEANUP_PID" 2>/dev/null || true
