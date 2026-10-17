@@ -2,7 +2,7 @@
 
 echo "========================================"
 echo "JAKE'S STATION RIPPER STARTING"
-echo "BUILD TEST: 2026-10-17-2"
+echo "BUILD TEST: 2026-10-17-3"
 echo "========================================"
 
 set -uo pipefail
@@ -224,7 +224,8 @@ for URL in "${STREAM_URLS[@]}"; do
                 )
                 
                 if [ "${MUSICBRAINZ_TAGGING}" = "true" ]; then
-                    RIPPER_ARGS+=(-E 'python3 /tagger.py "%d/%f" "%t"')
+                    # Split into discrete array parameters so streamripper reads them perfectly
+                    RIPPER_ARGS+=(-E "python3 /tagger.py %d/%f %t")
                 fi
             fi
             
