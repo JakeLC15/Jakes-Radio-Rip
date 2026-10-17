@@ -2,7 +2,7 @@
 
 echo "========================================"
 echo "JAKE'S STATION RIPPER STARTING"
-echo "BUILD TEST: 2026-10-12-1"
+echo "BUILD TEST: 2026-10-17-1"
 echo "========================================"
 
 set -uo pipefail
@@ -219,6 +219,7 @@ for URL in "${STREAM_URLS[@]}"; do
                     -d "$STREAM_DIR"
                     -u "WinampMPEG/5.0"
                     --no-cue
+                    -E 'python3 /tagger.py "%d/%f" "%t"'
                 )
             fi
             
