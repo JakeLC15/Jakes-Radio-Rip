@@ -1,7 +1,7 @@
 import sys
 import time
 import os
-import fcntl  # Safe and built-in for native Linux file locking
+import fcntl
 import musicbrainzngs
 from mutagen.easyid3 import EasyID3
 
@@ -9,6 +9,7 @@ musicbrainzngs.set_useragent("JakesRadioRipCustomTagger", "1.0", "ha-addon-user@
 
 def clean_and_tag_file(file_path, raw_title):
     if not os.path.exists(file_path):
+        print(f"File not found yet: {file_path}")
         return
 
     if " - " in raw_title:
@@ -18,9 +19,7 @@ def clean_and_tag_file(file_path, raw_title):
 
     lock_file_path = "/tmp/musicbrainz_api.lock"
     
-    print(f"[{raw_title}] Waiting for MusicBrainz API slot...")
-    
-    # Ensure the lock file exists before attempting to open/lock it
+    # Ensure lockfile exists
     if not os.path.exists(lock_file_path):
         try:
             with open(lock_file_path, "w") as f:
@@ -31,7 +30,7 @@ def clean_and_tag_file(file_path, raw_title):
     with open(lock_file_path, "w") as lock_file:
         fcntl.flock(lock_file, fcntl.LOCK_EX) 
         
-        # Mandatory 1-request-per-second limit compliance + padding
+        # Respect MusicBrainz 1 request per second rule
         time.sleep(2.0)
 
         try:
@@ -39,6 +38,7 @@ def clean_and_tag_file(file_path, raw_title):
             result = musicbrainzngs.search_recordings(artist=artist, recording=title, limit=1)
             
             if result.get('recording-list'):
+                # FIX: Access the first match inside the returned array list
                 match = result['recording-list'][0]
                 
                 clean_title = match.get('title', title)
@@ -63,4 +63,5 @@ def clean_and_tag_file(file_path, raw_title):
 
 if __name__ == "__main__":
     if len(sys.argv) >= 3:
+        # FIX: Pass arguments correctly via indexing
         clean_and_tag_file(sys.argv[1], sys.argv[2])
