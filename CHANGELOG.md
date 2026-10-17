@@ -1,5 +1,7 @@
 # Changelog
 
+## 2026.10.17-1
+- **Added:** Better ID3 tags with musicbrainz tagging.
 ## 2026.10.12-1
 - **Added:** YouTube audio support. 
 ## 2026.10.11-2
