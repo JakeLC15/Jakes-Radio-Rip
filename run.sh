@@ -225,7 +225,9 @@ for URL in "${STREAM_URLS[@]}"; do
                 )
                 
                 if [ "${MUSICBRAINZ_TAGGING}" = "true" ]; then
-                    RIPPER_ARGS+=(-E "python3 /tagger.py %d/%f %t")
+                    # We call bash directly, which streamripper executes perfectly.
+                    # Bash then runs python and cleanly grabs the parameters streamripper passes to the end.
+                    RIPPER_ARGS+=(-E "/bin/bash" -c 'python3 /tagger.py "$0" "$1"')
                 fi
             fi
             
