@@ -119,7 +119,7 @@ increment_ads_removed() {
 
 # File monitor
 watch_all_completed_files() {
-    echo "👀 MP3 cleanup started: $BASE_OUTPUT_DIR"
+    echo "👀 MP3 monitoring and cleanup started: $BASE_OUTPUT_DIR"
 
     inotifywait \
         --monitor \
@@ -141,33 +141,31 @@ watch_all_completed_files() {
         esac
 
         (
-            # Allow Streamripper to finish
+            # Allow Streamripper to cleanly finish file write ops
             sleep 2
 
             [ -f "$REAL_PATH" ] || exit 0
-
             FILE_SIZE=$(stat -c%s "$REAL_PATH" 2>/dev/null) || exit 0
 
-            [ "$FILE_SIZE" -gt 0 ] || exit 0
-            [ "$FILE_SIZE" -lt "$MIN_FILE_SIZE_BYTES" ] || exit 0
+            # 1. RUN AD CLEANUP PURGE CHECKS
+            if [ "$FILE_SIZE" -le 0 ] || [ "$FILE_SIZE" -lt "$MIN_FILE_SIZE_BYTES" ]; then
+                sleep 3
+                CURRENT_SIZE=$(stat -c%s "$REAL_PATH" 2>/dev/null) || exit 0
+                if [ "$CURRENT_SIZE" -eq "$FILE_SIZE" ]; then
+                    STREAM_SOURCE=$(basename "$(dirname "$REAL_PATH")")
+                    echo "🧹 [$STREAM_SOURCE] Removing small advertisement MP3: $REAL_PATH"
+                    if rm -f -- "$REAL_PATH"; then
+                        increment_ads_removed 1
+                    fi
+                fi
+                exit 0
+            fi
 
-            sleep 3
-
-            [ -f "$REAL_PATH" ] || exit 0
-
-            CURRENT_SIZE=$(stat -c%s "$REAL_PATH" 2>/dev/null) || exit 0
-
-            [ "$CURRENT_SIZE" -eq "$FILE_SIZE" ] || exit 0
-
-            STREAM_SOURCE=$(basename "$(dirname "$REAL_PATH")")
-
-            echo "🧹 [$STREAM_SOURCE] Removing small MP3: $REAL_PATH"
-
-            if rm -f -- "$REAL_PATH" && [ ! -e "$REAL_PATH" ]; then
-                increment_ads_removed 1
-                echo "🗑️ Removed successfully"
-            else
-                echo "⚠️ Could not remove: $REAL_PATH"
+            # 2. FILE IS VALID -> EXECUTE MUSICBRAINZ AUTO-TAGGING NATIVELY
+            if [ "${MUSICBRAINZ_TAGGING}" = "true" ]; then
+                RAW_TITLE=$(basename "$REAL_PATH" .mp3)
+                echo "🎵 [Watcher] Passing completed track to tagger: $RAW_TITLE"
+                python3 /tagger.py "$REAL_PATH" "$RAW_TITLE"
             fi
         ) &
 
@@ -223,11 +221,6 @@ for URL in "${STREAM_URLS[@]}"; do
                     -u "WinampMPEG/5.0"
                     --no-cue
                 )
-                
-                # Dynamically append the exact string arguments to your stable array structure
-                if [ "${MUSICBRAINZ_TAGGING}" = "true" ]; then
-                    RIPPER_ARGS+=(-E "python3 /tagger.py")
-                fi
             fi
             
             if [ "${LOGGING_ENABLED}" != "true" ]; then
