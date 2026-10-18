@@ -2,6 +2,7 @@ import sys
 import time
 import os
 import fcntl
+import json
 import sqlite3
 import musicbrainzngs
 from mutagen.id3 import ID3, TIT2, TPE1, TALB, TXXX
