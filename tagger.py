@@ -75,12 +75,12 @@ def clean_and_tag_file(file_path, raw_title):
     if not os.path.exists(file_path):
         return
 
-    # Clear trailing duplicate digits appended by stream managers
+    is_duplicate_file = raw_title.endswith(' (1)')
+
     title_clean = raw_title
-    if title_clean.endswith(' (1)'):
+    if is_duplicate_file:
         title_clean = title_clean[:-4]
 
-    # Normalize track lookup fingerprint string key identifier target
     track_lookup_key = title_clean.strip().lower()
     if not track_lookup_key or " - " not in title_clean:
         return
@@ -94,7 +94,6 @@ def clean_and_tag_file(file_path, raw_title):
             print(f"🧹 [Tagger] Purging duplicate rip file: {raw_title}.mp3")
             try:
                 os.remove(file_path)
-                # AUTOMATION TRIGGER: Increment the metric file immediately on successful deletion
                 increment_duplicates_removed(1)
             except Exception as e:
                 print(f"⚠️ Could not delete duplicate file: {e}")
