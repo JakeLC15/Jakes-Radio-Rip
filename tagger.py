@@ -2,24 +2,44 @@ import sys
 import time
 import os
 import fcntl
+import sqlite3
 import musicbrainzngs
 from mutagen.id3 import ID3, TIT2, TPE1, TALB, TXXX
 
 musicbrainzngs.set_useragent("JakesRadioRipCustomTagger", "1.0", "ha-addon-user@example.com")
 
+def init_tracking_db():
+    """Creates a lightning-fast local cache table to track processed songs."""
+    db_path = "/tmp/tagger_state.db"
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS processed_tracks (
+            track_key TEXT PRIMARY KEY,
+            timestamp INTEGER
+        )
+    ''')
+    conn.commit()
+    return conn
+
+def is_already_processed_or_running(track_key):
+    """Checks and sets the lock state atomically to defeat parallel process races."""
+    db_path = "/tmp/tagger_state.db"
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    try:
+        # Atomic insertion will fail immediately if another thread is processing this track key string
+        cursor.execute('INSERT INTO processed_tracks (track_key, timestamp) VALUES (?, ?)', (track_key, int(time.time())))
+        conn.commit()
+        return False
+    except sqlite3.IntegrityError:
+        # Key already exists in database block, drop process execution thread
+        return True
+    finally:
+        conn.close()
+
 def clean_and_tag_file(file_path, raw_title):
     if not os.path.exists(file_path):
-        return
-
-    # Open the audio file using standard ID3 layout to inspect it first
-    try:
-        audio = ID3(file_path)
-    except Exception:
-        # Create tags if the file completely lacks an ID3 header
-        audio = ID3()
-
-    # LIGHTWEIGHT GATE: If it already has our custom MusicBrainz tag, stop immediately!
-    if 'TXXX:MusicBrainz Recording Id' in audio:
         return
 
     # Clear trailing duplicate digits appended by stream managers
@@ -27,10 +47,27 @@ def clean_and_tag_file(file_path, raw_title):
     if title_clean.endswith(' (1)'):
         title_clean = title_clean[:-4]
 
-    if " - " in title_clean:
-        artist, title = title_clean.split(" - ", 1)
-    else:
+    # Normalize track lookup fingerprint string key identifier target
+    track_lookup_key = title_clean.strip().lower()
+    if not track_lookup_key or " - " not in title_clean:
         return
+
+    # DATABASE GATING BLOCK: Kill duplicate executions instantly
+    init_tracking_db()
+    if is_already_processed_or_running(track_lookup_key):
+        return
+
+    # Open the audio file using standard ID3 layout to inspect it 
+    try:
+        audio = ID3(file_path)
+    except Exception:
+        audio = ID3()
+
+    # Second check safety valve
+    if 'TXXX:MusicBrainz Recording Id' in audio:
+        return
+
+    artist, title = title_clean.split(" - ", 1)
 
     lock_file_path = "/tmp/musicbrainz_api.lock"
     if not os.path.exists(lock_file_path):
@@ -54,13 +91,15 @@ def clean_and_tag_file(file_path, raw_title):
                 match = result['recording-list'][0]
                 
                 clean_title = match.get('title', title.strip())
-                 
+                
+                # Access index 0 of the list before pulling nested artist details
                 credits_list = match.get('artist-credit', [{}])
                 if credits_list and isinstance(credits_list, list) and len(credits_list) > 0:
                     clean_artist = credits_list[0].get('artist', {}).get('name', artist.strip())
                 else:
                     clean_artist = artist.strip()
                 
+                # Access index 0 of the list before pulling nested release/album titles
                 album_name = "Radio Rip"
                 release_list = match.get('release-list', [])
                 if release_list and isinstance(release_list, list) and len(release_list) > 0:
