@@ -2,7 +2,7 @@
 
 echo "========================================"
 echo "JAKE'S STATION RIPPER STARTING"
-echo "BUILD TEST: 2026-10-18-1"
+echo "BUILD TEST: 2026-10-18-2"
 echo "========================================"
 
 set -uo pipefail
@@ -60,7 +60,6 @@ export ADS_REMOVED_FILE
 export ADS_REMOVED_LOCK
 export DUPLICATES_REMOVED_FILE
 export DUPLICATES_REMOVED_LOCK
-export MUSICBRAINZ_TAGGING # Export so the background subshell loops can read it
 
 if [ ! -f "$ADS_REMOVED_FILE" ]; then
     echo '{"count":0}' > "$ADS_REMOVED_FILE"
@@ -128,6 +127,27 @@ increment_ads_removed() {
     ) 200>"$ADS_REMOVED_LOCK"
 }
 
+# Auto-increment duplicate tracker file function
+increment_duplicates_removed() {
+    local count="$1"
+    (
+        flock 200
+        local current
+        current=$(jq -r '.count // 0' "$DUPLICATES_REMOVED_FILE" 2>/dev/null) || current=0
+        [[ "$current" =~ ^[0-9]+$ ]] || current=0
+        current=$((current + count))
+
+        local tmp_file="${DUPLICATES_REMOVED_FILE}.$$"
+        if jq --argjson count "$current" '.count = $count' \
+            "$DUPLICATES_REMOVED_FILE" > "$tmp_file" 2>/dev/null; then
+            mv -f "$tmp_file" "$DUPLICATES_REMOVED_FILE"
+        else
+            rm -f "$tmp_file"
+            echo "{\"count\": $current}" > "$DUPLICATES_REMOVED_FILE"
+        fi
+    ) 200>"$DUPLICATES_REMOVED_LOCK"
+}
+
 # File monitor
 watch_all_completed_files() {
     echo "👀 MP3 monitoring and cleanup started: $BASE_OUTPUT_DIR"
@@ -150,6 +170,19 @@ watch_all_completed_files() {
         case "$REAL_PATH" in
             */incomplete/*) continue ;;
         esac
+
+        RAW_TITLE=$(basename "$REAL_PATH" .mp3)
+
+        if [[ "$RAW_TITLE" == *" (1)" ]]; then
+            if [ "${PURGE_DUPLICATES}" = "true" ]; then
+                echo "🧹 [Watcher] Native Bash Purge catching duplicate rip file: ${RAW_TITLE}.mp3"
+                rm -f -- "$REAL_PATH" 2>/dev/null || true
+                increment_duplicates_removed 1
+            else
+                echo "⏭️ [Watcher] Duplicate tracking detected but automatic purge is disabled: ${RAW_TITLE}.mp3"
+            fi
+            continue # Hard break: stops background thread generation and Python calls!
+        fi
 
         (
             # Allow Streamripper to cleanly finish file write ops
@@ -174,7 +207,6 @@ watch_all_completed_files() {
 
             # 2. FILE IS VALID -> EXECUTE MUSICBRAINZ AUTO-TAGGING NATIVELY
             if [ "${MUSICBRAINZ_TAGGING}" = "true" ]; then
-                RAW_TITLE=$(basename "$REAL_PATH" .mp3)
                 echo "🎵 [Watcher] Passing completed track to tagger: $RAW_TITLE"
                 python3 /tagger.py "$REAL_PATH" "$RAW_TITLE"
             fi
@@ -260,10 +292,7 @@ for URL in "${STREAM_URLS[@]}"; do
 
             sleep "$RETRY_DELAY"
         done
-
     ) &
-
-    # Save the background wrapper PID
     RIPPER_PIDS+=("$!")
 done
 
