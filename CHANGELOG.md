@@ -1,5 +1,8 @@
 # Changelog
 
+## 2026.10.18-1
+- **Added:** Automatic tagging and duplicate purge options.
+- **Fixed:** Bug in ID3 tag not getting all data. I think!
 ## 2026.10.17-1
 - **Added:** Better ID3 tags with musicbrainz tagging.
 ## 2026.10.12-1

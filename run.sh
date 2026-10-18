@@ -2,7 +2,7 @@
 
 echo "========================================"
 echo "JAKE'S STATION RIPPER STARTING"
-echo "BUILD TEST: 2026-10-17-4"
+echo "BUILD TEST: 2026-10-18-1"
 echo "========================================"
 
 set -uo pipefail
@@ -20,7 +20,9 @@ LOGGING_ENABLED="false"
 BASE_OUTPUT_DIR="/media/stationripper"
 CONTINUOUS_RECORDING="false"
 MIN_FILE_SIZE_MB="1.0"
-MUSICBRAINZ_TAGGING="true"  # Set default tracking fallback state
+MUSICBRAINZ_TAGGING="true"
+PURGE_DUPLICATES="true"
+
 STREAM_URLS=()
 
 if [ -f "$CONFIG_PATH" ]; then
@@ -28,7 +30,8 @@ if [ -f "$CONFIG_PATH" ]; then
     LOGGING_ENABLED=$(jq --raw-output '.logging // false' "$CONFIG_PATH")
     MIN_FILE_SIZE_MB=$(jq --raw-output '.min_file_size_mb // 1' "$CONFIG_PATH")
     CONTINUOUS_RECORDING=$(jq --raw-output '.continuous_recording // false' "$CONFIG_PATH")
-    MUSICBRAINZ_TAGGING=$(jq --raw-output '.musicbrainz_tagging // true' "$CONFIG_PATH") # Read UI option choice
+    MUSICBRAINZ_TAGGING=$(jq --raw-output '.musicbrainz_tagging // true' "$CONFIG_PATH")
+    PURGE_DUPLICATES=$(jq --raw-output '.purge_duplicates // true' "$CONFIG_PATH")
     mapfile -t STREAM_URLS < <(jq --raw-output '.streams[] // empty' "$CONFIG_PATH")
 fi
 
@@ -50,13 +53,21 @@ echo "{}" > "$STATUS_FILE"
 
 ADS_REMOVED_FILE="${BASE_OUTPUT_DIR}/ads_removed.json"
 ADS_REMOVED_LOCK="${BASE_OUTPUT_DIR}/ads_removed.lock"
+DUPLICATES_REMOVED_FILE="${BASE_OUTPUT_DIR}/duplicates_removed.json"
+DUPLICATES_REMOVED_LOCK="${BASE_OUTPUT_DIR}/duplicates_removed.lock"
 
 export ADS_REMOVED_FILE
 export ADS_REMOVED_LOCK
+export DUPLICATES_REMOVED_FILE
+export DUPLICATES_REMOVED_LOCK
 export MUSICBRAINZ_TAGGING # Export so the background subshell loops can read it
 
 if [ ! -f "$ADS_REMOVED_FILE" ]; then
     echo '{"count":0}' > "$ADS_REMOVED_FILE"
+fi
+
+if [ ! -f "$DUPLICATES_REMOVED_FILE" ]; then
+    echo '{"count":0}' > "$DUPLICATES_REMOVED_FILE"
 fi
 
 # Clean up incomplete
@@ -375,6 +386,11 @@ ADS_REMOVED_FILE = os.environ.get(
     f"{BASE_OUTPUT_DIR}/ads_removed.json"
 )
 
+DUPLICATES_REMOVED_FILE = os.environ.get(
+    "DUPLICATES_REMOVED_FILE",
+    f"{BASE_OUTPUT_DIR}/duplicates_removed.json"
+)
+
 MIN_FILE_SIZE_MB = float(os.environ.get("MIN_FILE_SIZE_MB", "1"))
 
 CONFIG_PATH = "/data/options.json"
@@ -603,12 +619,21 @@ class IngressHandler(BaseHTTPRequestHandler):
                 return int(data.get("count", 0))
         except:
             return 0
+            
+    def _get_duplicates_removed(self):
+        try:
+            with open(DUPLICATES_REMOVED_FILE, "r") as f:
+                data = json.load(f)
+                return int(data.get("count", 0))
+        except:
+            return 0
 
     def _render_page(self):
         files, today_count = self._get_files()
 
         current_count = len(files)
         ads_removed = self._get_ads_removed()
+        duplicates_removed = self._get_duplicates_removed()
 
         try:
             usage = shutil.disk_usage(BASE_OUTPUT_DIR)
@@ -829,6 +854,12 @@ class IngressHandler(BaseHTTPRequestHandler):
                 Ads Removed
                 <div class="stat-value" id="stat-ads-removed">{ads_removed}</div>
                 <small>Files smaller than {MIN_FILE_SIZE_MB} MB</small>
+            </div>
+            
+            <div class="stat">
+                Duplicates Removed
+                <div class="stat-value" id="stat-duplicates-removed">{duplicates_removed}</div>
+                <smalleDuplicate files removed</small>
             </div>
             
             <div class="stat">
@@ -1301,7 +1332,7 @@ if __name__ == '__main__':
 EOF
 
 # Export environment paths to python sub-process scope
-export BASE_OUTPUT_DIR STATUS_FILE START_TIME ADS_REMOVED_FILE MIN_FILE_SIZE_MB MUSICBRAINZ_TAGGING
+export BASE_OUTPUT_DIR STATUS_FILE START_TIME ADS_REMOVED_FILE DUPLICATES_REMOVED_FILE MIN_FILE_SIZE_MB MUSICBRAINZ_TAGGING PURGE_DUPLICATES
 
 # Shutdown function
 shutdown_handler() {
