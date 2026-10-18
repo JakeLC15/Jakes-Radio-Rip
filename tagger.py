@@ -136,27 +136,38 @@ def clean_and_tag_file(file_path, raw_title):
                     return
 
                 album_name = "Jakes Rip"
-                release_list = match.get('release-list', [])
-                
                 genre_name = "Ripped"
+                
+                release_list = match.get('release-list', [])
                 tag_list = match.get('tag-list', [])
                 
-                if not tag_list and release_list and isinstance(release_list, list) and len(release_list) > 0:
-                    tag_list = release_list[0].get('tag-list', [])
-                
-                if tag_list and isinstance(tag_list, list) and len(tag_list) > 0:
-                    sorted_tags = sorted(tag_list, key=lambda x: int(x.get('count', 0)), reverse=True)
-                    genre_name = sorted_tags[0].get('name', genre_name).title()
+                # If the main recording doesn't have tags, pull them from the primary release dictionary item
+                if not tag_list and isinstance(release_list, list) and len(release_list) > 0:
+                    first_release = release_list[0]
+                    if isinstance(first_release, dict):
+                        tag_list = first_release.get('tag-list', [])
 
-                if release_list and isinstance(release_list, list) and len(release_list) > 0:
-                    album_name = release_list[0].get('title', "Radio Rip")
+                # Process the tag list to find the top voted community genre string
+                if tag_list and isinstance(tag_list, list) and len(tag_list) > 0:
+                    try:
+                        sorted_tags = sorted(tag_list, key=lambda x: int(x.get('count', 0)), reverse=True)
+                        if sorted_tags and isinstance(sorted_tags[0], dict):
+                            genre_name = sorted_tags[0].get('name', genre_name).title()
+                    except Exception:
+                        pass
+
+                # Access index 0 of the release list explicitly before calling .get()
+                if isinstance(release_list, list) and len(release_list) > 0:
+                    first_release = release_list[0]
+                    if isinstance(first_release, dict):
+                        album_name = first_release.get('title', "Radio Rip")
                 
                 # Save core ID3 tags natively
                 audio['TIT2'] = TIT2(encoding=3, text=clean_title)
                 audio['TPE1'] = TPE1(encoding=3, text=clean_artist)
                 audio['TALB'] = TALB(encoding=3, text=album_name)
                 audio['TCON'] = TCON(encoding=3, text=genre_name)
-                
+
                 # Inject Custom TXXX text tags for standard tracking IDs (Read by Home Assistant)
                 audio['TXXX:MusicBrainz Recording Id'] = TXXX(encoding=3, desc='MusicBrainz Recording Id', text=match['id'])
                 
