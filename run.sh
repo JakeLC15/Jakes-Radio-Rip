@@ -2,7 +2,7 @@
 
 echo "========================================"
 echo "JAKE'S STATION RIPPER STARTING"
-echo "BUILD TEST: 2026-10-17-3"
+echo "BUILD TEST: 2026-10-17-4"
 echo "========================================"
 
 set -uo pipefail
@@ -53,7 +53,7 @@ ADS_REMOVED_LOCK="${BASE_OUTPUT_DIR}/ads_removed.lock"
 
 export ADS_REMOVED_FILE
 export ADS_REMOVED_LOCK
-export MUSICBRAINZ_TAGGING # FIX: Export to thread subshell visibility context
+export MUSICBRAINZ_TAGGING # Export so the background subshell loops can read it
 
 if [ ! -f "$ADS_REMOVED_FILE" ]; then
     echo '{"count":0}' > "$ADS_REMOVED_FILE"
@@ -224,10 +224,9 @@ for URL in "${STREAM_URLS[@]}"; do
                     --no-cue
                 )
                 
+                # Dynamically append the exact string arguments to your stable array structure
                 if [ "${MUSICBRAINZ_TAGGING}" = "true" ]; then
-                    # We call bash directly, which streamripper executes perfectly.
-                    # Bash then runs python and cleanly grabs the parameters streamripper passes to the end.
-                    RIPPER_ARGS+=(-E "/bin/bash" -c 'python3 /tagger.py "$0" "$1"')
+                    RIPPER_ARGS+=(-E "python3 /tagger.py")
                 fi
             fi
             
@@ -235,12 +234,13 @@ for URL in "${STREAM_URLS[@]}"; do
                 RIPPER_ARGS+=(--quiet)
             fi
 
-            CLEANUP_PID=""
+           CLEANUP_PID=""
             
             streamripper "${RIPPER_ARGS[@]}"
             
             RC=$?
             
+            # Stop the file watcher after Streamripper exits
             if [ -n "$CLEANUP_PID" ]; then
                 kill "$CLEANUP_PID" 2>/dev/null || true
                 wait "$CLEANUP_PID" 2>/dev/null || true
