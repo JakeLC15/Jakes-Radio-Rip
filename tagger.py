@@ -22,6 +22,39 @@ def init_tracking_db():
     conn.commit()
     return conn
 
+def increment_duplicates_removed(count=1):
+    """Safely increments the auto-purged duplicate track counter JSON with robust file locking."""
+    dup_file = os.environ.get('DUPLICATES_REMOVED_FILE', '/media/stationripper/duplicates_removed.json')
+    dup_lock = os.environ.get('DUPLICATES_REMOVED_LOCK', '/media/stationripper/duplicates_removed.lock')
+    
+    if not os.path.exists(dup_file):
+        with open(dup_file, 'w') as f:
+            f.write('{"count":0}')
+
+    # Establish an explicit file handle lock to protect data alignment operations
+    lock_file_path = dup_lock if os.path.exists(dup_lock) else dup_file
+    with open(lock_file_path, 'r+') as lock_f:
+        try:
+            fcntl.flock(lock_f, fcntl.LOCK_EX)
+            
+            with open(dup_file, 'r+') as f:
+                try:
+                    data = json.load(f)
+                except Exception:
+                    data = {"count": 0}
+                
+                current = data.get('count', 0)
+                if not isinstance(current, int):
+                    current = 0
+                
+                data['count'] = current + count
+                
+                f.seek(0)
+                json.dump(data, f)
+                f.truncate()
+        finally:
+            fcntl.flock(lock_f, fcntl.LOCK_UN)
+
 def is_already_processed_or_running(track_key):
     """Checks and sets the lock state atomically to defeat parallel process races."""
     db_path = "/tmp/tagger_state.db"
@@ -52,9 +85,19 @@ def clean_and_tag_file(file_path, raw_title):
     if not track_lookup_key or " - " not in title_clean:
         return
 
-    # DATABASE GATING BLOCK: Kill duplicate executions instantly
+    # DATABASE GATING BLOCK
     init_tracking_db()
     if is_already_processed_or_running(track_lookup_key):
+        should_purge = os.environ.get('PURGE_DUPLICATES', 'true').lower() == 'true'
+
+        if should_purge and is_duplicate_file and os.path.exists(file_path):
+            print(f"🧹 [Tagger] Purging duplicate rip file: {raw_title}.mp3")
+            try:
+                os.remove(file_path)
+                # AUTOMATION TRIGGER: Increment the metric file immediately on successful deletion
+                increment_duplicates_removed(1)
+            except Exception as e:
+                print(f"⚠️ Could not delete duplicate file: {e}")
         return
 
     # Open the audio file using standard ID3 layout to inspect it 
