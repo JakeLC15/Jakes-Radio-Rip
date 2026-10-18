@@ -67,8 +67,10 @@ def clean_and_tag_file(file_path, raw_title):
 
     track_lookup_key = title_clean.strip().lower()
     if not track_lookup_key or " - " not in title_clean:
+        print(f"⚠️ [Tagger] Skipping track (Invalid string format): '{raw_title}'")
         return
 
+    # DATABASE GATING BLOCK
     init_tracking_db()
     if is_already_processed_or_running(track_lookup_key):
         should_purge = os.environ.get('PURGE_DUPLICATES', 'true').lower() == 'true'
@@ -78,7 +80,9 @@ def clean_and_tag_file(file_path, raw_title):
                 os.remove(file_path)
                 increment_duplicates_removed(1)
             except Exception as e:
-                print(f"⚠️ Could not delete duplicate file: {e}")
+                print(f"⚠️ [Tagger] Could not delete duplicate file: {e}")
+        else:
+            print(f"⏭️ [Tagger] Skipping loop pass (Track key '{track_lookup_key}' already processed this session)")
         return
 
     try:
@@ -87,6 +91,7 @@ def clean_and_tag_file(file_path, raw_title):
         audio = ID3()
 
     if 'TXXX:MusicBrainz Recording Id' in audio:
+        print(f"✅ [Tagger] Skipping file (Already fully tagged with MBID): {raw_title}.mp3")
         return
 
     artist, title = title_clean.split(" - ", 1)
@@ -114,40 +119,33 @@ def clean_and_tag_file(file_path, raw_title):
                 credits_list = match.get('artist-credit', [{}])
                 clean_artist = credits_list[0].get('artist', {}).get('name', search_artist) if (credits_list and isinstance(credits_list, list)) else search_artist
                 
-                # Normalize and verify
+                # STRING NORMALIZATION HELPERS FOR VALIDATION
                 def normalize_str(s):
-                    # Lowercase and strip spaces, apostrophes (both types), quotes, hyphens, and periods
                     removals = ["'", "’", '"', "“", "”", "-", ".", ",", "!", "?", "(", ")", "[", "]"]
                     out = s.lower().strip()
                     for char in removals:
                         out = out.replace(char, "")
-                    return " ".join(out.split()) # Collapses extra internal whitespace
+                    return " ".join(out.split())
 
-                norm_search_artist = normalize_str(search_artist)
-                norm_clean_artist = normalize_str(clean_artist)
-                norm_search_title = normalize_str(search_title)
-                norm_clean_title = normalize_str(clean_title)
-
-                if norm_search_artist not in norm_clean_artist and norm_clean_artist not in norm_search_artist:
+                if normalize_str(search_artist) not in normalize_str(clean_artist) and normalize_str(clean_artist) not in normalize_str(search_artist):
                     print(f"❌ Match rejected (Artist Mismatch): '{search_artist}' vs '{clean_artist}'")
                     return
-                if norm_search_title not in norm_clean_title and norm_clean_title not in norm_search_title:
+                if normalize_str(search_title) not in normalize_str(clean_title) and normalize_str(clean_title) not in normalize_str(search_title):
                     print(f"❌ Match rejected (Title Mismatch): '{search_title}' vs '{clean_title}'")
                     return
 
+                # Defaults
                 album_name = "Jakes Rip"
                 genre_name = "Ripped"
                 
                 release_list = match.get('release-list', [])
                 tag_list = match.get('tag-list', [])
                 
-                # If the main recording doesn't have tags, pull them from the primary release dictionary item
                 if not tag_list and isinstance(release_list, list) and len(release_list) > 0:
                     first_release = release_list[0]
                     if isinstance(first_release, dict):
                         tag_list = first_release.get('tag-list', [])
 
-                # Process the tag list to find the top voted community genre string
                 if tag_list and isinstance(tag_list, list) and len(tag_list) > 0:
                     try:
                         sorted_tags = sorted(tag_list, key=lambda x: int(x.get('count', 0)), reverse=True)
@@ -156,19 +154,16 @@ def clean_and_tag_file(file_path, raw_title):
                     except Exception:
                         pass
 
-                # Access index 0 of the release list explicitly before calling .get()
                 if isinstance(release_list, list) and len(release_list) > 0:
                     first_release = release_list[0]
                     if isinstance(first_release, dict):
                         album_name = first_release.get('title', "Radio Rip")
                 
-                # Save core ID3 tags natively
                 audio['TIT2'] = TIT2(encoding=3, text=clean_title)
                 audio['TPE1'] = TPE1(encoding=3, text=clean_artist)
                 audio['TALB'] = TALB(encoding=3, text=album_name)
                 audio['TCON'] = TCON(encoding=3, text=genre_name)
-
-                # Inject Custom TXXX text tags for standard tracking IDs (Read by Home Assistant)
+                
                 audio['TXXX:MusicBrainz Recording Id'] = TXXX(encoding=3, desc='MusicBrainz Recording Id', text=match['id'])
                 
                 if credits_list and isinstance(credits_list, list) and len(credits_list) > 0:
