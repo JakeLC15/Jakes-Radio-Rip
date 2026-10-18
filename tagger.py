@@ -114,11 +114,24 @@ def clean_and_tag_file(file_path, raw_title):
                 credits_list = match.get('artist-credit', [{}])
                 clean_artist = credits_list[0].get('artist', {}).get('name', search_artist) if (credits_list and isinstance(credits_list, list)) else search_artist
                 
-                # Check for mismatch
-                if search_artist.lower() not in clean_artist.lower() and clean_artist.lower() not in search_artist.lower():
+                # Normalize and verify
+                def normalize_str(s):
+                    # Lowercase and strip spaces, apostrophes (both types), quotes, hyphens, and periods
+                    removals = ["'", "’", '"', "“", "”", "-", ".", ",", "!", "?", "(", ")", "[", "]"]
+                    out = s.lower().strip()
+                    for char in removals:
+                        out = out.replace(char, "")
+                    return " ".join(out.split()) # Collapses extra internal whitespace
+
+                norm_search_artist = normalize_str(search_artist)
+                norm_clean_artist = normalize_str(clean_artist)
+                norm_search_title = normalize_str(search_title)
+                norm_clean_title = normalize_str(clean_title)
+
+                if norm_search_artist not in norm_clean_artist and norm_clean_artist not in norm_search_artist:
                     print(f"❌ Match rejected (Artist Mismatch): '{search_artist}' vs '{clean_artist}'")
                     return
-                if search_title.lower() not in clean_title.lower() and clean_title.lower() not in search_title.lower():
+                if norm_search_title not in norm_clean_title and norm_clean_title not in norm_search_title:
                     print(f"❌ Match rejected (Title Mismatch): '{search_title}' vs '{clean_title}'")
                     return
 
