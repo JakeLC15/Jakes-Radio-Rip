@@ -20,7 +20,6 @@ def clean_and_tag_file(file_path, raw_title):
 
     # LIGHTWEIGHT GATE: If it already has our custom MusicBrainz tag, stop immediately!
     if 'TXXX:MusicBrainz Recording Id' in audio:
-        # Exiting here consumes practically zero resources and breaks the infinite loop cleanly
         return
 
     # Clear trailing duplicate digits appended by stream managers
@@ -55,15 +54,13 @@ def clean_and_tag_file(file_path, raw_title):
                 match = result['recording-list'][0]
                 
                 clean_title = match.get('title', title.strip())
-                
-                # Parse the nested artist payload structure safely
+                 
                 credits_list = match.get('artist-credit', [{}])
-                if credits_list and isinstance(credits_list, list):
+                if credits_list and isinstance(credits_list, list) and len(credits_list) > 0:
                     clean_artist = credits_list[0].get('artist', {}).get('name', artist.strip())
                 else:
                     clean_artist = artist.strip()
                 
-                # Access the first element index inside the release-list array for the album
                 album_name = "Radio Rip"
                 release_list = match.get('release-list', [])
                 if release_list and isinstance(release_list, list) and len(release_list) > 0:
@@ -78,7 +75,7 @@ def clean_and_tag_file(file_path, raw_title):
                 audio['TXXX:MusicBrainz Recording Id'] = TXXX(encoding=3, desc='MusicBrainz Recording Id', text=match['id'])
                 
                 # Extract and assign artist track IDs if present in the lookup payload response 
-                if credits_list and isinstance(credits_list, list):
+                if credits_list and isinstance(credits_list, list) and len(credits_list) > 0:
                     artist_id = credits_list[0].get('artist', {}).get('id')
                     if artist_id:
                         audio['TXXX:MusicBrainz Artist Id'] = TXXX(encoding=3, desc='MusicBrainz Artist Id', text=artist_id)
