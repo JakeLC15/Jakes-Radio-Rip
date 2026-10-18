@@ -9,7 +9,18 @@ musicbrainzngs.set_useragent("JakesRadioRipCustomTagger", "1.0", "ha-addon-user@
 
 def clean_and_tag_file(file_path, raw_title):
     if not os.path.exists(file_path):
-        print(f"File not found yet: {file_path}")
+        return
+
+    # Open the audio file using standard ID3 layout to inspect it first
+    try:
+        audio = ID3(file_path)
+    except Exception:
+        # Create tags if the file completely lacks an ID3 header
+        audio = ID3()
+
+    # LIGHTWEIGHT GATE: If it already has our custom MusicBrainz tag, stop immediately!
+    if 'TXXX:MusicBrainz Recording Id' in audio:
+        # Exiting here consumes practically zero resources and breaks the infinite loop cleanly
         return
 
     # Clear trailing duplicate digits appended by stream managers
@@ -48,7 +59,6 @@ def clean_and_tag_file(file_path, raw_title):
                 # Parse the nested artist payload structure safely
                 credits_list = match.get('artist-credit', [{}])
                 if credits_list and isinstance(credits_list, list):
-                    # Grab the name within the first dictionary item of the artist credit array list
                     clean_artist = credits_list[0].get('artist', {}).get('name', artist.strip())
                 else:
                     clean_artist = artist.strip()
@@ -58,13 +68,6 @@ def clean_and_tag_file(file_path, raw_title):
                 release_list = match.get('release-list', [])
                 if release_list and isinstance(release_list, list) and len(release_list) > 0:
                     album_name = release_list[0].get('title', "Radio Rip")
-                
-                # Open the audio file using standard ID3 layout to avoid custom key whitelist bugs
-                try:
-                    audio = ID3(file_path)
-                except Exception:
-                    # Create tags if the file completely lacks an ID3 header header
-                    audio = ID3()
                 
                 # Inject core tag frames natively into the audio profile binary destination blocks
                 audio['TIT2'] = TIT2(encoding=3, text=clean_title)  # Title Frame
