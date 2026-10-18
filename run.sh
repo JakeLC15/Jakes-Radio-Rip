@@ -151,7 +151,7 @@ watch_all_completed_files() {
             if [ "$FILE_SIZE" -le 0 ] || [ "$FILE_SIZE" -lt "$MIN_FILE_SIZE_BYTES" ]; then
                 sleep 3
                 CURRENT_SIZE=$(stat -c%s "$REAL_PATH" 2>/dev/null) || exit 0
-                if [ "$CURRENT_SIZE" -eq "$FILE_SIZE" ]; then
+                if [ "$CURRENT_SIZE" -eq "$FILE_SIZE" ] ; then
                     STREAM_SOURCE=$(basename "$(dirname "$REAL_PATH")")
                     echo "🧹 [$STREAM_SOURCE] Removing small advertisement MP3: $REAL_PATH"
                     if rm -f -- "$REAL_PATH"; then
