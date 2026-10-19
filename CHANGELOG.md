@@ -1,5 +1,7 @@
 # Changelog
 
+## 2026.10.18-2
+- **Fixed:** Moved duplicate purge from tagger.py to run.sh for stability.
 ## 2026.10.18-1
 - **Added:** Automatic tagging and duplicate purge options.
 - **Fixed:** Bug in ID3 tag not getting all data. I think!
