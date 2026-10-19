@@ -173,6 +173,7 @@ watch_all_completed_files() {
 
         RAW_TITLE=$(basename "$REAL_PATH" .mp3)
 
+        # FIX: Corrected wildcards to look for text ending with " (1)"
         if [[ "$RAW_TITLE" == *" (1)" ]]; then
             if [ "${PURGE_DUPLICATES}" = "true" ]; then
                 echo "🧹 [Watcher] Native Bash Purge catching duplicate rip file: ${RAW_TITLE}.mp3"
@@ -181,19 +182,22 @@ watch_all_completed_files() {
             else
                 echo "⏭️ [Watcher] Duplicate tracking detected but automatic purge is disabled: ${RAW_TITLE}.mp3"
             fi
-            continue # Hard break: stops background thread generation and Python calls!
+            continue # Hard break: completely blocks background thread execution for this file!
         fi
 
         (
             # Allow Streamripper to cleanly finish file write ops
             sleep 2
 
+            # FIX: Fast safety exit. If another concurrent process or loop step deleted this file, stop now!
             [ -f "$REAL_PATH" ] || exit 0
+            
             FILE_SIZE=$(stat -c%s "$REAL_PATH" 2>/dev/null) || exit 0
 
             # 1. RUN AD CLEANUP PURGE CHECKS
             if [ "$FILE_SIZE" -le 0 ] || [ "$FILE_SIZE" -lt "$MIN_FILE_SIZE_BYTES" ]; then
                 sleep 3
+                [ -f "$REAL_PATH" ] || exit 0
                 CURRENT_SIZE=$(stat -c%s "$REAL_PATH" 2>/dev/null) || exit 0
                 if [ "$CURRENT_SIZE" -eq "$FILE_SIZE" ] ; then
                     STREAM_SOURCE=$(basename "$(dirname "$REAL_PATH")")
@@ -207,8 +211,11 @@ watch_all_completed_files() {
 
             # 2. FILE IS VALID -> EXECUTE MUSICBRAINZ AUTO-TAGGING NATIVELY
             if [ "${MUSICBRAINZ_TAGGING}" = "true" ]; then
-                echo "🎵 [Watcher] Passing completed track to tagger: $RAW_TITLE"
-                python3 /tagger.py "$REAL_PATH" "$RAW_TITLE"
+                # Double-check file existence one last time before hitting the python interpreter engine
+                if [ -f "$REAL_PATH" ]; then
+                    echo "🎵 [Watcher] Passing completed track to tagger: $RAW_TITLE"
+                    python3 /tagger.py "$REAL_PATH" "$RAW_TITLE"
+                fi
             fi
         ) &
 
