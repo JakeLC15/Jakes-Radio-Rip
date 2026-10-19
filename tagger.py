@@ -88,9 +88,11 @@ def clean_and_tag_file(file_path, raw_title):
                     album_name = first_release.get('title', "Radio Rip")
                     release_date = first_release.get('date', '')
                     
-                    if first_release.get('medium-list') and len(first_release['medium-list']) > 0:
-                        track_list = first_release['medium-list'][0].get('track-list', [])
-                        if track_list and len(track_list) > 0:
+                    # FIX: Access medium-list as an array first, then pull track-list as an array safely
+                    medium_list = first_release.get('medium-list', [])
+                    if isinstance(medium_list, list) and len(medium_list) > 0:
+                        track_list = medium_list[0].get('track-list', [])
+                        if isinstance(track_list, list) and len(track_list) > 0:
                             track_num = str(track_list[0].get('number', '1'))
 
                     if 'tag-list' in first_release:
