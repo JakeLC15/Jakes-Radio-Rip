@@ -9,7 +9,7 @@
   </tr>
 </table>
 
-### This a lightweight Home Assistant Add-on that uses optimized background streams to rip multiple internet radio stations simultaneously.
+### This a lightweight Home Assistant Add-on that uses optimized background streams to rip multiple internet radio stations simultaneously. Songs are tagged with metadata from MusicBrainz and ready for Music Assistant. 
 
 **This is for personal use only and you are responsible for use and your own actions!**
 
@@ -20,11 +20,12 @@ https://github.com/qbus00/streamripper.git
 
 - Multi-Stream Audio Capture: Rips multiple streams at the same time in the background.
 
-- Auto-Tagging: Automatically splits tracks and adds metadata tags using stream data.
+- Auto-Tagging: Automatically splits tracks and adds metadata tags using musicbrainz.
 
-- Ingress Web UI & Sidebar Integration: Monitor your live stream statuses, track tallies, disk usage, connection history and recent tracks directly from your Home Assistant sidebar.
+- Ingress Web UI & Sidebar Integration: Monitor your live stream statuses, track tallies, disk usage, connection history, ads removed and recent tracks directly from your Home Assistant sidebar.
 
 - One-Click Library Maintenance: Includes a built-in button to instantly purge numbered duplicate tracks Track - Artist(2).mp3, etc.) on the fly.
+- Or it can remove duplicates automatically.
   
 - Configurable minimum track size to keep. Recordings that are smaller are considered ads and the count is shown in the UI.
   
@@ -57,7 +58,7 @@ https://github.com/JakeLC15/Jakes-Radio-Rip.git
 
 Jakes Station Rip Tool > Install > Start
 
-### Add this to configuration.yaml for media access:
+### Optional: Add this to configuration.yaml for media access:
 Remember to restart Home Assistant! 
 ```
 homeassistant:
@@ -71,73 +72,70 @@ homeassistant:
 
 📻 Live Stream Status
 
-    🟢 bigrradio.cdnstream1.com Ripping
-    🟢 stream.rockantenne.de Ripping
-    🟢 ec3.yesstreaming.net:2770 Ripping
-    🟢 streams.radiobob.de Ripping
-    🟢 216.235.82.16:80 Ripping
-    🟢 listen.181fm.com Ripping
+    🟢 jakes_station.com Ripping
+    🟢 stream.jakes.de Ripping
+    🟢 ec3.jakes.net:2770 Ripping
+    🟢 streams.jakes.de Ripping
+    🟢 200.200.86.16:80 Ripping
+    🟢 listen.306fm.com Ripping
 
 🎵 Current Track
 
 Aerosmith - I Dont Want To Miss A Thing
 
 📊 Library
-
 Total Tracks
-7002 \
+10719
 Tracks Today
-1873 \
+2084
+Ads Removed
+2266
+Files smaller than 1.0 MB
+Duplicates Removed
+233
+
 Disk Used
-80.9 GB \
+104.8 GB
 Disk Free
-373.6 GB \
+349.8 GB
 Disk Total
-469.4 GB \
+469.4 GB
 Disk Usage
-17.2% \
+22.3%
 Uptime
-13h 17m
+12h 25m 22s
 
 🔄 Connection History
-
-    bigrradio.cdnstream1.com
-    0 reconnects
-    stream.rockantenne.de
-    0 reconnects
-    ec3.yesstreaming.net:2770
-    0 reconnects
-    streams.radiobob.de
-    0 reconnects
-    216.235.82.16:80
-    0 reconnects
-    listen.181fm.com
-    0 reconnects
 
 🕘 Recent Tracks
 
     Aerosmith - I Dont Want To Miss A Thing
-    📁 ROCK ANTENNE 90er Rock · ⏱️ 09:55:38
+    📁 Jakes Rock · ⏱️ 09:55:38
     Amorphis - Amongst stars
-    📁 ROCK ANTENNE Modern Metal · ⏱️ 09:55:23
+    📁 Jakes Modern Metal · ⏱️ 09:55:23
     Dustin Lynch, MacKenzie Porter - Thinking `Bout You (feat. MacKenzie Porter)
-    📁 113FM Legends of Country · ⏱️ 09:54:58
+    📁 306FM Legends of Country · ⏱️ 09:54:58
     Godsmack - When Legends Rise
-    📁 BigR - Post Grunge Rock · ⏱️ 09:54:49
+    📁 Jakes - Post Grunge Rock · ⏱️ 09:54:49
     Dredg - Bug eyes
-    📁 ROCK ANTENNE Modern Rock · ⏱️ 09:54:07
+    📁 Jakes Modern Rock · ⏱️ 09:54:07
     The Black Keys - You Got to Lose
-    📁 ROCK ANTENNE Alternative · ⏱️ 09:53:57
+    📁 Jakes Alternative · ⏱️ 09:53:57
     Clay Walker - Dreaming With My Eyes Open (Single Version)
-    📁 181.FM 90s Country · ⏱️ 09:53:41
+    📁 306.FM 90s Country · ⏱️ 09:53:41
     Badflower - Promise Me
-    📁 RADIO BOB - Alternative Rock · ⏱️ 09:53:34
+    📁 Jakes - Alternative Rock · ⏱️ 09:53:34
     Bush - Creatures of the fire
-    📁 ROCK ANTENNE Grunge · ⏱️ 09:53:15
+    📁 Jakes Grunge · ⏱️ 09:53:15
     Styx - Shooz
-    📁 Badlands Classic Rock · ⏱️ 09:52:47
+    📁 Jakes Classic Rock · ⏱️ 09:52:47
 
 
 >While this is a working addon, it is still a work in progress and features may be added and removed. It also relies on multiple outside sources that are constantly changing and updating!
 
 **Let me know if you run into any bugs or have feature suggestions!**
+
+## Disclaimer
+This software is developed and provided strictly for educational, research, and personal archiving purposes. The developer does not condone, promote, or encourage the unauthorized downloading or distribution of copyrighted material. 
+Users are solely responsible for ensuring that their use of this tool complies with local laws, regulations, and the Terms of Service of any streaming platforms or radio stations accessed. The developer assumes no liability for any misuse of this software or any copyright infringement committed by the end-user. 
+blah blah blah! Don't do dumb stuff!
