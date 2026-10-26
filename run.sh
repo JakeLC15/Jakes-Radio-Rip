@@ -2,7 +2,7 @@
 
 echo "========================================"
 echo "JAKE'S STATION RIPPER STARTING"
-echo "BUILD TEST: 2026-10-18-2"
+echo "BUILD TEST: 2026-10-26-1"
 echo "========================================"
 
 set -uo pipefail
@@ -323,6 +323,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
 from threading import Lock, Thread
 import re
+from mutagen.id3 import ID3, ID3NoHeaderError, TXXX, UFID
 
 def update_download_state(status, message):
     with DOWNLOAD_STATE_LOCK:
@@ -601,6 +602,136 @@ def restart_addon():
     
 class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
     daemon_threads = True
+
+
+def music_path(relative=""):
+    """Resolve a user-selected path safely within the configured music directory."""
+    base = os.path.realpath(BASE_OUTPUT_DIR)
+    relative = (relative or "").replace("\\", "/").strip("/")
+    candidate = os.path.realpath(os.path.join(base, relative))
+    if candidate != base and not candidate.startswith(base + os.sep):
+        raise ValueError("That path is outside the music directory.")
+    if os.path.commonpath([base, candidate]) != base:
+        raise ValueError("That path is outside the music directory.")
+    return candidate
+
+def music_relative(path):
+    return os.path.relpath(path, os.path.realpath(BASE_OUTPUT_DIR)).replace(os.sep, "/")
+
+def id3_frame_value(frame):
+    """Convert common Mutagen frame values to display-safe text."""
+    if hasattr(frame, "text"):
+        value = getattr(frame, "text", [])
+        if isinstance(value, (list, tuple)):
+            return " / ".join(str(v) for v in value)
+        return str(value)
+    if hasattr(frame, "data"):
+        return "<binary data>"
+    if hasattr(frame, "url"):
+        return str(frame.url)
+    return str(frame)
+
+def read_music_tags(path):
+    tags = []
+    mbids = []
+    try:
+        audio = ID3(path)
+    except ID3NoHeaderError:
+        return {"tags": [], "musicbrainz": [], "has_id3": False}
+    for key in audio.keys():
+        frame = audio[key]
+        desc = getattr(frame, "desc", "")
+        owner = getattr(frame, "owner", "")
+        value = id3_frame_value(frame)
+        label = key
+        if desc:
+            label = f"{key} ({desc})"
+        tags.append({"key": key, "label": label, "value": value})
+        if (key.startswith("TXXX:") and str(desc).lower().startswith("musicbrainz")) or (
+            key == "UFID:" + str(owner) and "musicbrainz" in str(owner).lower()
+        ):
+            mbids.append({"key": key, "label": label, "value": value})
+    tags.sort(key=lambda item: item["key"].lower())
+    mbids.sort(key=lambda item: item["key"].lower())
+    return {"tags": tags, "musicbrainz": mbids, "has_id3": True}
+
+def music_editor_page():
+    return """<!DOCTYPE html>
+<html style="background:#111;color:#eee"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Music Tag Editor</title>
+<style>
+body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#111;color:#eee;padding:16px;max-width:1000px;margin:auto}
+.card{background:#222;padding:18px;border-radius:8px;margin:0 0 16px}
+h2{color:#03a9f4;margin-top:0}button{background:#03a9f4;color:#fff;border:0;border-radius:4px;padding:10px 14px;font-weight:bold;cursor:pointer}
+button:disabled{opacity:.5}input{box-sizing:border-box;width:100%;padding:11px;margin:6px 0 12px;background:#191919;color:#fff;border:1px solid #444;border-radius:4px}
+a{color:#03a9f4}.muted{color:#aaa}.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.row button{width:auto}
+#folders button,#songs button{margin:3px}.tagrow{padding:8px 0;border-bottom:1px solid #333;overflow-wrap:anywhere}.tagkey{font-weight:bold;color:#9edcf5}.tagvalue{white-space:pre-wrap;overflow-wrap:anywhere}
+table{width:100%;border-collapse:collapse}td{padding:8px 4px;border-bottom:1px solid #333;overflow-wrap:anywhere}td:last-child{text-align:right;width:95px}
+.notice{padding:10px;background:#263238;border-radius:5px;overflow-wrap:anywhere;margin:10px 0}
+</style></head><body>
+<div class="card"><div class="row"><h2 style="flex:1">🏷️ Music Tag Editor</h2><button onclick="window.location.href=window.location.pathname">← Back to Station Ripper</button></div>
+<p class="muted">Browse one folder at a time. Select an MP3 to inspect its tags. Save &amp; Reset renames the file in place and removes MusicBrainz identifiers; the existing watcher/tagger handles retagging.</p>
+<div id="crumbs"></div><div id="folders" class="row"></div><div id="songs"></div><div id="pager" class="row"></div><div id="notice" class="notice" hidden></div></div>
+<div id="editor" class="card" hidden><h2>Selected MP3</h2><div id="selectedPath" class="muted"></div>
+<label for="newname">Filename (including .mp3)</label><input id="newname" maxlength="240">
+<div class="row"><button id="save" onclick="saveFile()">Save Filename</button><button id="reset" onclick="saveFile(true)">Save &amp; Reset for Retagging</button></div>
+<h2 style="margin-top:22px">Current ID3 Tags</h2><div id="tags"></div><h2>MusicBrainz Identifiers</h2><div id="mbids"></div></div>
+<script>
+const basePath=window.location.pathname;
+let currentDir='', page=0, selected='';
+function apiUrl(params){return basePath+'?'+new URLSearchParams(params).toString();}
+function notice(msg){const n=document.getElementById('notice');n.hidden=false;n.textContent=msg;}
+async function getJSON(params){const r=await fetch(apiUrl(params),{credentials:'same-origin'});const j=await r.json();if(!r.ok||j.error)throw new Error(j.error||('HTTP '+r.status));return j;}
+function el(tag, text, cls){const x=document.createElement(tag);x.textContent=text;if(cls)x.className=cls;return x;}
+async function loadFolder(dir='',p=0){
+ currentDir=dir;page=p;document.getElementById('folders').replaceChildren();document.getElementById('songs').replaceChildren();document.getElementById('pager').replaceChildren();
+ document.getElementById('editor').hidden=true;
+ try{
+  const d=await getJSON({api:'music_list',dir:currentDir,page:String(page)});
+  const crumbs=document.getElementById('crumbs');crumbs.replaceChildren();
+  const up=el('button','⬆ Parent folder');up.onclick=()=>loadFolder(d.parent||'',0);document.getElementById('folders').append(up);
+  crumbs.append(el('p','Folder: /'+(currentDir||''),'muted'));
+  d.dirs.forEach(name=>{const b=el('button','📁 '+name);b.onclick=()=>loadFolder(currentDir?currentDir+'/'+name:name,0);document.getElementById('folders').append(b);});
+  const table=document.createElement('table');
+  d.files.forEach(f=>{const tr=document.createElement('tr'),td=document.createElement('td'),act=document.createElement('td');td.textContent=f.name;const b=el('button','View');b.onclick=()=>selectFile(f.path);act.append(b);tr.append(td,act);table.append(tr);});
+  document.getElementById('songs').append(table);
+  const pager=document.getElementById('pager');
+  pager.append(el('span',`${d.total} MP3 file(s) in this folder · Page ${page+1}`,'muted'));
+  if(page>0){const b=el('button','Previous');b.onclick=()=>loadFolder(currentDir,page-1);pager.append(b);}
+  if((page+1)*d.page_size<d.total){const b=el('button','Next');b.onclick=()=>loadFolder(currentDir,page+1);pager.append(b);}
+ }catch(e){notice('Could not list folder: '+e.message);}
+}
+async function selectFile(path){
+ try{
+  const d=await getJSON({api:'music_info',path});
+  selected=d.path;document.getElementById('editor').hidden=false;
+  document.getElementById('selectedPath').textContent=d.path;
+  document.getElementById('newname').value=d.name;
+  const tags=document.getElementById('tags'), mb=document.getElementById('mbids');tags.replaceChildren();mb.replaceChildren();
+  if(!d.info.tags.length)tags.append(el('p','No ID3 tags found.'));
+  d.info.tags.forEach(t=>{const row=el('div','');row.className='tagrow';row.append(el('div',t.label,'tagkey'),el('div',t.value||'(empty)','tagvalue'));tags.append(row);});
+  if(!d.info.musicbrainz.length)mb.append(el('p','No MusicBrainz identifiers found.'));
+  d.info.musicbrainz.forEach(t=>{const row=el('div','');row.className='tagrow';row.append(el('div',t.label,'tagkey'),el('div',t.value||'(empty)','tagvalue'));mb.append(row);});
+  document.getElementById('editor').scrollIntoView({behavior:'smooth',block:'start'});
+ }catch(e){notice('Could not read tags: '+e.message);}
+}
+async function saveFile(reset=false){
+ if(!selected)return;
+ const name=document.getElementById('newname').value.trim();
+ if(!name){notice('Enter a filename.');return;}
+ if(!confirm(reset?'Rename this MP3 and remove its MusicBrainz IDs so the watcher can retag it?':'Rename this MP3?'))return;
+ const buttons=[document.getElementById('save'),document.getElementById('reset')];buttons.forEach(b=>b.disabled=true);
+ try{
+  const body=new URLSearchParams({action:'edit_music_tags',path:selected,new_name:name,reset_musicbrainz:reset?'yes':'no'});
+  const r=await fetch(basePath,{method:'POST',body,credentials:'same-origin'});
+  const j=await r.json();if(!r.ok||!j.ok)throw new Error(j.error||('HTTP '+r.status));
+  notice(j.message);selected=j.path;await loadFolder(currentDir,page);await selectFile(j.path);
+ }catch(e){notice('Save failed: '+e.message);}
+ finally{buttons.forEach(b=>b.disabled=false);}
+}
+loadFolder('',0);
+</script></body></html>"""
 
 class IngressHandler(BaseHTTPRequestHandler):
     def _get_files(self):
@@ -926,6 +1057,12 @@ class IngressHandler(BaseHTTPRequestHandler):
     </div>
 
     <div class="card">
+        <h2>🏷️ Music Tag Editor</h2>
+        <p style="color:#aaa;">Browse music folders, inspect ID3 tags, rename MP3 files, and clear MusicBrainz IDs for retagging.</p>
+        <button class="btn-refresh" onclick="window.location.href=window.location.pathname+'?page=tags';">Open Music Tag Editor</button>
+    </div>
+
+    <div class="card">
         <h2>🔄 Connection History</h2>
         <ul id="reconnect-list">{reconnect_rows}</ul>
     </div>
@@ -1167,6 +1304,65 @@ class IngressHandler(BaseHTTPRequestHandler):
             form = parse_qs(body)
             action = form.get("action", ["purge_duplicates"])[0]
 
+            if action == "edit_music_tags":
+                try:
+                    relative = form.get("path", [""])[0]
+                    new_name = form.get("new_name", [""])[0].strip()
+                    reset_mb = form.get("reset_musicbrainz", ["no"])[0] == "yes"
+                    old_path = music_path(relative)
+                    if not os.path.isfile(old_path) or not old_path.lower().endswith(".mp3"):
+                        raise ValueError("Select an existing MP3 file.")
+                    if not new_name or new_name in (".", "..") or "/" in new_name or "\\" in new_name:
+                        raise ValueError("Enter a filename only, without folder paths.")
+                    if not new_name.lower().endswith(".mp3"):
+                        new_name += ".mp3"
+                    if len(new_name) > 240 or any(ord(ch) < 32 for ch in new_name):
+                        raise ValueError("The filename is too long or contains invalid characters.")
+                    new_path = os.path.join(os.path.dirname(old_path), new_name)
+                    if os.path.realpath(new_path) != os.path.join(os.path.realpath(os.path.dirname(old_path)), new_name):
+                        raise ValueError("Invalid filename.")
+                    if os.path.exists(new_path) and os.path.realpath(new_path) != os.path.realpath(old_path):
+                        raise ValueError("A file with that name already exists.")
+                    if os.path.realpath(new_path) != os.path.realpath(old_path):
+                        os.rename(old_path, new_path)
+                    removed = 0
+                    if reset_mb:
+                        try:
+                            audio = ID3(new_path)
+                        except ID3NoHeaderError:
+                            audio = ID3()
+                        for key in list(audio.keys()):
+                            frame = audio[key]
+                            desc = str(getattr(frame, "desc", ""))
+                            owner = str(getattr(frame, "owner", ""))
+                            if (key.startswith("TXXX:") and desc.lower().startswith("musicbrainz")) or (
+                                key.startswith("UFID:") and "musicbrainz" in owner.lower()
+                            ):
+                                del audio[key]
+                                removed += 1
+                        audio.save(new_path)
+                    result = {
+                        "ok": True,
+                        "path": music_relative(new_path),
+                        "message": ("Renamed file and removed " + str(removed) +
+                                    " MusicBrainz identifier frame(s). The existing watcher should pass it to tagger.py.")
+                                   if reset_mb else "Filename saved."
+                    }
+                    payload = json.dumps(result).encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json; charset=UTF-8")
+                    self.send_header("Content-Length", str(len(payload)))
+                    self.end_headers()
+                    self.wfile.write(payload)
+                except Exception as exc:
+                    payload = json.dumps({"ok": False, "error": str(exc)}).encode("utf-8")
+                    self.send_response(400)
+                    self.send_header("Content-Type", "application/json; charset=UTF-8")
+                    self.send_header("Content-Length", str(len(payload)))
+                    self.end_headers()
+                    self.wfile.write(payload)
+                return
+
             if action == "youtube_download":
                 url = form.get("url", [""])[0].strip()
                 playlist = form.get("playlist", [""])[0] == "yes"
@@ -1356,11 +1552,82 @@ class IngressHandler(BaseHTTPRequestHandler):
                 pass
 
     def do_GET(self):
-        self.send_response(200)
-        self.send_header('Content-Type', 'text/html; charset=UTF-8')
-        self.end_headers()
+        parsed = urlparse(self.path)
+        params = parse_qs(parsed.query)
+        api = params.get("api", [""])[0]
+        try:
+            if api == "music_list":
+                relative = params.get("dir", [""])[0]
+                folder = music_path(relative)
+                if not os.path.isdir(folder):
+                    raise ValueError("Folder does not exist.")
+                dirs, files = [], []
+                # List only the current directory; no recursive library scan.
+                with os.scandir(folder) as entries:
+                    for entry in entries:
+                        name = entry.name
+                        if name.lower() == "incomplete":
+                            continue
+                        try:
+                            if entry.is_dir(follow_symlinks=False):
+                                dirs.append(name)
+                            elif entry.is_file(follow_symlinks=False) and name.lower().endswith(".mp3"):
+                                files.append({"name": name, "path": music_relative(entry.path)})
+                        except OSError:
+                            continue
+                dirs.sort(key=str.lower)
+                files.sort(key=lambda item: item["name"].lower())
+                page_size = 50
+                page = max(0, int(params.get("page", ["0"])[0]))
+                total = len(files)
+                result = {
+                    "dir": music_relative(folder) if folder != os.path.realpath(BASE_OUTPUT_DIR) else "",
+                    "parent": music_relative(os.path.dirname(folder)) if folder != os.path.realpath(BASE_OUTPUT_DIR) else "",
+                    "dirs": dirs,
+                    "files": files[page * page_size:(page + 1) * page_size],
+                    "total": total,
+                    "page_size": page_size
+                }
+                payload = json.dumps(result).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json; charset=UTF-8")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+                return
+            elif api == "music_info":
+                path = music_path(params.get("path", [""])[0])
+                if not os.path.isfile(path) or not path.lower().endswith(".mp3"):
+                    raise ValueError("Select an existing MP3 file.")
+                result = {"path": music_relative(path), "name": os.path.basename(path), "info": read_music_tags(path)}
+                payload = json.dumps(result).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json; charset=UTF-8")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+                return
+            elif api:
+                raise ValueError("Unknown API action.")
+        except Exception as exc:
+            payload = json.dumps({"error": str(exc)}).encode("utf-8")
+            self.send_response(400)
+            self.send_header("Content-Type", "application/json; charset=UTF-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
 
-        self.wfile.write(self._render_page().encode('utf-8'))
+        if params.get("page", [""])[0] == "tags":
+            page = music_editor_page()
+        else:
+            page = self._render_page()
+        payload = page.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=UTF-8")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
 
 if __name__ == '__main__':
     server = ThreadedHTTPServer(('0.0.0.0', 8099), IngressHandler)
