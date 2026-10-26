@@ -1,5 +1,7 @@
 # Changelog
 
+## 2026.10.26-1
+- **Added:** ID3 Tag editor.
 ## 2026.10.18-2
 - **Fixed:** Moved duplicate purge from tagger.py to run.sh for stability.
 ## 2026.10.18-1
