@@ -1,0 +1,20 @@
+{
+  "configuration": {
+    "nas_mount_check": {
+      "name": "Enable NAS Storage Protection",
+      "description": "Turn this on if you are saving music to a Network Attached Storage (NAS) share. It automatically halts the script if the NAS goes offline, preventing your Home Assistant local storage from filling up to 100%."
+    },
+    "nas_status_entity": {
+      "name": "Home Assistant NAS Status Entity (Optional)",
+      "description": "Enter the entity ID of a Home Assistant helper switch, ping sensor, or binary sensor tracking your NAS status (e.g., 'input_boolean.nas_online'). If this entity is off, false, or disconnected, the ripper will abort."
+    },
+    "min_file_size_mb": {
+      "name": "Minimum File Size Threshold (MB)",
+      "description": "Sets the minimum file size limit in megabytes. Files smaller than this value (such as short ads, station jingles, or interrupted streams) will be automatically filtered out and deleted."
+    },
+    "continuous_recording": {
+      "name": "Continuous Recording Mode",
+      "description": "Enable this to keep the stream ripper running infinitely in the background. It will automatically restart the recording capture loop if the radio stream disconnects or drops."
+    }
+  }
+}
