@@ -2,7 +2,7 @@
 
 echo "========================================"
 echo "JAKE'S STATION RIPPER STARTING"
-echo "BUILD TEST: 2026-10-26-2"
+echo "BUILD TEST: 2026-10-27-1"
 echo "========================================"
 
 set -uo pipefail
@@ -23,6 +23,10 @@ MIN_FILE_SIZE_MB="1.0"
 MUSICBRAINZ_TAGGING="true"
 PURGE_DUPLICATES="true"
 
+# Universal storage configuration defaults
+NAS_MOUNT_CHECK="false"
+NAS_STATUS_ENTITY=""
+
 STREAM_URLS=()
 
 if [ -f "$CONFIG_PATH" ]; then
@@ -32,24 +36,12 @@ if [ -f "$CONFIG_PATH" ]; then
     CONTINUOUS_RECORDING=$(jq --raw-output '.continuous_recording // false' "$CONFIG_PATH")
     MUSICBRAINZ_TAGGING=$(jq --raw-output '.musicbrainz_tagging // true' "$CONFIG_PATH")
     PURGE_DUPLICATES=$(jq --raw-output '.purge_duplicates // true' "$CONFIG_PATH")
-    mapfile -t STREAM_URLS < <(jq --raw-output '.streams[] // empty' "$CONFIG_PATH")
-fi
-
-if [ ${#STREAM_URLS[@]} -eq 0 ]; then
-    echo "⚠️ No streams configured. The Ingress UI will remain available so you can add one."
-fi
-
-mkdir -p "$BASE_OUTPUT_DIR"
-
-STATUS_FILE="${BASE_OUTPUT_DIR}/status.json"
-STATUS_LOCK="${BASE_OUTPUT_DIR}/status.lock"
-START_TIME=$(date +%s)
-MIN_FILE_SIZE_BYTES=$(awk -v mb="$MIN_FILE_SIZE_MB" \
-    'BEGIN { printf "%.0f", mb * 1024 * 1024 }')
     
-echo "Minimum retained MP3 size: ${MIN_FILE_SIZE_MB} MB"
-echo "MusicBrainz Auto-Tagging Enabled: ${MUSICBRAINZ_TAGGING}" # Log configuration visibility
-echo "{}" > "$STATUS_FILE"
+    # Parse new storage verification options
+    NAS_MOUNT_CHECK=$(jq --raw-output '.nas_mount_check // false' "$CONFIG_PATH")
+    NAS_STATUS_ENTITY=$(jq --raw-output '.nas_status_entity // empty' "$CONFIG_PATH")
+    
+    mapfile -t STREAM_URLS  "$STATUS_FILE"
 
 ADS_REMOVED_FILE="${BASE_OUTPUT_DIR}/ads_removed.json"
 ADS_REMOVED_LOCK="${BASE_OUTPUT_DIR}/ads_removed.lock"
