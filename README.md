@@ -22,6 +22,8 @@ https://github.com/qbus00/streamripper.git
 
 - Auto-Tagging: Automatically splits tracks and adds metadata tags using musicbrainz.
 
+- Tag editor: See tag info. Edit title to correct naming and auto tagging runs. Filter tracks by tagging status to find tracks easier.
+
 - Ingress Web UI & Sidebar Integration: Monitor your live stream statuses, track tallies, disk usage, connection history, ads removed and recent tracks directly from your Home Assistant sidebar.
 
 - One-Click Library Maintenance: Includes a built-in button to instantly purge numbered duplicate tracks Track - Artist(2).mp3, etc.) on the fly.
