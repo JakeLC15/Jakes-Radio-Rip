@@ -1,5 +1,7 @@
 # Changelog
 
+## 2026.10.26-2
+- **Added:** ID3 Tag editor filters and check box showing tagged songs.
 ## 2026.10.26-1
 - **Added:** ID3 Tag editor.
 ## 2026.10.18-2
