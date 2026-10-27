@@ -2,7 +2,7 @@
 
 echo "========================================"
 echo "JAKE'S STATION RIPPER STARTING"
-echo "BUILD TEST: 2026-10-26-1"
+echo "BUILD TEST: 2026-10-26-2"
 echo "========================================"
 
 set -uo pipefail
@@ -663,23 +663,38 @@ def music_editor_page():
 <style>
 body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#111;color:#eee;padding:16px;max-width:1000px;margin:auto}
 .card{background:#222;padding:18px;border-radius:8px;margin:0 0 16px}
-h2{color:#03a9f4;margin-top:0}button{background:#03a9f4;color:#fff;border:0;border-radius:4px;padding:10px 14px;font-weight:bold;cursor:pointer}
-button:disabled{opacity:.5}input{box-sizing:border-box;width:100%;padding:11px;margin:6px 0 12px;background:#191919;color:#fff;border:1px solid #444;border-radius:4px}
+h2{color:#03a9f4;margin-top:0}button,select{background:#03a9f4;color:#fff;border:0;border-radius:4px;padding:10px 14px;font-weight:bold;cursor:pointer}
+button:disabled{opacity:.5}input,select{box-sizing:border-box;background:#191919;color:#fff;border:1px solid #444;border-radius:4px}
+input{width:100%;padding:11px;margin:6px 0 12px}
+select{padding:8px 12px;font-size:14px}
 a{color:#03a9f4}.muted{color:#aaa}.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.row button{width:auto}
 #folders button,#songs button{margin:3px}.tagrow{padding:8px 0;border-bottom:1px solid #333;overflow-wrap:anywhere}.tagkey{font-weight:bold;color:#9edcf5}.tagvalue{white-space:pre-wrap;overflow-wrap:anywhere}
 table{width:100%;border-collapse:collapse}td{padding:8px 4px;border-bottom:1px solid #333;overflow-wrap:anywhere}td:last-child{text-align:right;width:95px}
 .notice{padding:10px;background:#263238;border-radius:5px;overflow-wrap:anywhere;margin:10px 0}
+.mb-check{color:#4caf50;font-weight:bold;margin-right:6px}
 </style></head><body>
 <div class="card"><div class="row"><h2 style="flex:1">🏷️ Music Tag Editor</h2><button onclick="window.location.href=window.location.pathname">← Back to Station Ripper</button></div>
 <p class="muted">Browse one folder at a time. Select an MP3 to inspect its tags. Save &amp; Reset renames the file in place and removes MusicBrainz identifiers; the existing watcher/tagger handles retagging.</p>
-<div id="crumbs"></div><div id="folders" class="row"></div><div id="songs"></div><div id="pager" class="row"></div><div id="notice" class="notice" hidden></div></div>
+<div id="crumbs"></div><div id="folders" class="row"></div>
+<div class="row" style="margin:12px 0;justify-content:space-between;align-items:center;">
+  <div id="pager" class="row" style="margin:0"></div>
+  <div>
+    <label for="filterSelect" class="muted" style="margin-right:6px;font-size:14px">Filter:</label>
+    <select id="filterSelect" onchange="applyFilter(this.value)">
+      <option value="both">Show All</option>
+      <option value="tagged">Tagged Only (✅)</option>
+      <option value="untagged">Untagged Only</option>
+    </select>
+  </div>
+</div>
+<div id="songs"></div><div id="notice" class="notice" hidden></div></div>
 <div id="editor" class="card" hidden><h2>Selected MP3</h2><div id="selectedPath" class="muted"></div>
 <label for="newname">Filename (including .mp3)</label><input id="newname" maxlength="240">
 <div class="row"><button id="save" onclick="saveFile()">Save Filename</button><button id="reset" onclick="saveFile(true)">Save &amp; Reset for Retagging</button></div>
 <h2 style="margin-top:22px">Current ID3 Tags</h2><div id="tags"></div><h2>MusicBrainz Identifiers</h2><div id="mbids"></div></div>
 <script>
 const basePath=window.location.pathname;
-let currentDir='', page=0, selected='';
+let currentDir='', page=0, selected='', currentFilter='both';
 function apiUrl(params){return basePath+'?'+new URLSearchParams(params).toString();}
 function notice(msg){const n=document.getElementById('notice');n.hidden=false;n.textContent=msg;}
 async function getJSON(params){const r=await fetch(apiUrl(params),{credentials:'same-origin'});const j=await r.json();if(!r.ok||j.error)throw new Error(j.error||('HTTP '+r.status));return j;}
@@ -694,13 +709,37 @@ async function loadFolder(dir='',p=0){
   crumbs.append(el('p','Folder: /'+(currentDir||''),'muted'));
   d.dirs.forEach(name=>{const b=el('button','📁 '+name);b.onclick=()=>loadFolder(currentDir?currentDir+'/'+name:name,0);document.getElementById('folders').append(b);});
   const table=document.createElement('table');
-  d.files.forEach(f=>{const tr=document.createElement('tr'),td=document.createElement('td'),act=document.createElement('td');td.textContent=f.name;const b=el('button','View');b.onclick=()=>selectFile(f.path);act.append(b);tr.append(td,act);table.append(tr);});
+  d.files.forEach(f=>{
+   const tr=document.createElement('tr'),td=document.createElement('td'),act=document.createElement('td');
+   tr.setAttribute('data-tagged', f.has_musicbrainz ? 'true' : 'false');
+   if(f.has_musicbrainz){
+    const checkSpan=el('span','✅ ','mb-check');
+    td.append(checkSpan);
+   }
+   td.append(document.createTextNode(f.name));
+   const b=el('button','View');b.onclick=()=>selectFile(f.path);act.append(b);tr.append(td,act);table.append(tr);
+  });
   document.getElementById('songs').append(table);
   const pager=document.getElementById('pager');
-  pager.append(el('span',`${d.total} MP3 file(s) in this folder · Page ${page+1}`,'muted'));
+  pager.append(el('span',`${d.total} MP3 file(s) · Page ${page+1}`,'muted'));
   if(page>0){const b=el('button','Previous');b.onclick=()=>loadFolder(currentDir,page-1);pager.append(b);}
   if((page+1)*d.page_size<d.total){const b=el('button','Next');b.onclick=()=>loadFolder(currentDir,page+1);pager.append(b);}
+  applyFilter(currentFilter);
  }catch(e){notice('Could not list folder: '+e.message);}
+}
+function applyFilter(value) {
+ currentFilter = value;
+ const rows = document.querySelectorAll('#songs table tr');
+ rows.forEach(row => {
+  const isTagged = row.getAttribute('data-tagged') === 'true';
+  if (value === 'both') {
+   row.hidden = false;
+  } else if (value === 'tagged') {
+   row.hidden = !isTagged;
+  } else if (value === 'untagged') {
+   row.hidden = isTagged;
+  }
+ });
 }
 async function selectFile(path){
  try{
@@ -1572,7 +1611,27 @@ class IngressHandler(BaseHTTPRequestHandler):
                             if entry.is_dir(follow_symlinks=False):
                                 dirs.append(name)
                             elif entry.is_file(follow_symlinks=False) and name.lower().endswith(".mp3"):
-                                files.append({"name": name, "path": music_relative(entry.path)})
+                                # Check for MusicBrainz tags in the current MP3 file
+                                has_mb = False
+                                try:
+                                    audio = ID3(entry.path)
+                                    for key in audio.keys():
+                                        frame = audio[key]
+                                        desc = str(getattr(frame, "desc", "")).lower()
+                                        owner = str(getattr(frame, "owner", "")).lower()
+                                        if (key.startswith("TXXX:") and desc.startswith("musicbrainz")) or (
+                                            key.startswith("UFID:") and "musicbrainz" in owner
+                                        ):
+                                            has_mb = True
+                                            break
+                                except ID3NoHeaderError:
+                                    pass
+
+                                files.append({
+                                    "name": name, 
+                                    "path": music_relative(entry.path),
+                                    "has_musicbrainz": has_mb
+                                })
                         except OSError:
                             continue
                 dirs.sort(key=str.lower)
