@@ -682,7 +682,7 @@ table{width:100%;border-collapse:collapse}td{padding:8px 4px;border-bottom:1px s
     <label for="filterSelect" class="muted" style="margin-right:6px;font-size:14px">Filter:</label>
     <select id="filterSelect" onchange="applyFilter(this.value)">
       <option value="both">Show All</option>
-      <option value="tagged">Tagged Only (☑)</option>
+      <option value="tagged">Tagged Only (✅)</option>
       <option value="untagged">Untagged Only</option>
     </select>
   </div>
@@ -713,7 +713,7 @@ async function loadFolder(dir='',p=0){
    const tr=document.createElement('tr'),td=document.createElement('td'),act=document.createElement('td');
    tr.setAttribute('data-tagged', f.has_musicbrainz ? 'true' : 'false');
    if(f.has_musicbrainz){
-    const checkSpan=el('span','☑ ','mb-check');
+    const checkSpan=el('span','✅ ','mb-check');
     td.append(checkSpan);
    }
    td.append(document.createTextNode(f.name));
