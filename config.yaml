@@ -9,6 +9,7 @@ arch:
 startup: "application"
 boot: "auto"
 url: "https://github.com/JakeLC15/Jakes-Radio-Rip"
+homeassistant_api: true
 hassio_api: true
 hassio_role: manager
 ingress: true
@@ -26,18 +27,22 @@ options:
   output_dir: "/media/music/jakes_station_rip"
   streams: []
   logging: false
+  nas_mount_check: false
+  nas_status_entity: "binary_sensor.nas_online"
+  status_lock: "unlocked"
   min_file_size_mb: 1.0
   continuous_recording: false
   musicbrainz_tagging: true
   purge_duplicates: true
 schema:
-  nas_mount_check: bool
-  nas_status_entity: str?
   output_dir: str
-  logging: bool
   min_file_size_mb: float
   continuous_recording: bool
   musicbrainz_tagging: bool
   purge_duplicates: bool
+  nas_mount_check: bool
+  nas_status_entity: str
+  status_lock: str
+  logging: bool
   streams:
     - str
