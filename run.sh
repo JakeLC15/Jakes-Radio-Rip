@@ -2,7 +2,7 @@
 
 echo "========================================"
 echo "JAKE'S STATION RIPPER STARTING"
-echo "BUILD TEST: 2026-10-27-1"
+echo "BUILD TEST: 2026-10-28-2"
 echo "========================================"
 
 set -uo pipefail
@@ -37,17 +37,22 @@ if [ -f "$CONFIG_PATH" ]; then
     MUSICBRAINZ_TAGGING=$(jq --raw-output '.musicbrainz_tagging // true' "$CONFIG_PATH")
     PURGE_DUPLICATES=$(jq --raw-output '.purge_duplicates // true' "$CONFIG_PATH")
     
-    # Parse new storage verification options
-    NAS_MOUNT_CHECK=$(jq --raw-output '.nas_mount_check // false' "$CONFIG_PATH")
-    NAS_STATUS_ENTITY=$(jq --raw-output '.nas_status_entity // empty' "$CONFIG_PATH")
-    
-    mapfile -t STREAM_URLS  "$STATUS_FILE"
+    NAS_MOUNT_CHECK=$(jq --raw-output '.nas_mount_check // ""' "$CONFIG_PATH")
+    NAS_STATUS_ENTITY=$(jq --raw-output '.nas_status_entity // ""' "$CONFIG_PATH")
+
+    mapfile -t STREAM_URLS < <(jq --raw-output '.streams[] // empty' "$CONFIG_PATH")
+fi
+
 
 ADS_REMOVED_FILE="${BASE_OUTPUT_DIR}/ads_removed.json"
 ADS_REMOVED_LOCK="${BASE_OUTPUT_DIR}/ads_removed.lock"
 DUPLICATES_REMOVED_FILE="${BASE_OUTPUT_DIR}/duplicates_removed.json"
 DUPLICATES_REMOVED_LOCK="${BASE_OUTPUT_DIR}/duplicates_removed.lock"
+STATUS_FILE="${BASE_OUTPUT_DIR}/status.json"
+STATUS_LOCK="${BASE_OUTPUT_DIR}/status.lock"
 
+export STATUS_FILE
+export STATUS_LOCK
 export ADS_REMOVED_FILE
 export ADS_REMOVED_LOCK
 export DUPLICATES_REMOVED_FILE
@@ -59,6 +64,57 @@ fi
 
 if [ ! -f "$DUPLICATES_REMOVED_FILE" ]; then
     echo '{"count":0}' > "$DUPLICATES_REMOVED_FILE"
+fi
+
+if [ "$NAS_MOUNT_CHECK" = "true" ] && [ "$NAS_STATUS_ENTITY" = "binary_sensor.nas_online" ]; then
+    echo "ERROR: Please change 'nas_status_entity' from the default placeholder to your real NAS sensor."
+fi
+
+if [ "$NAS_MOUNT_CHECK" = "true" ]; then
+    echo "Checking NAS status via entity: '$NAS_STATUS_ENTITY'..."
+
+    # Query the Home Assistant Supervisor API for the entity's state
+    RESPONSE=$(curl -s -X GET \
+        -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" \
+        -H "Content-Type: application/json" \
+        "http://supervisor/core/api/states/${NAS_STATUS_ENTITY}")
+
+    # Extract entity state
+    ENTITY_STATE=$(echo "$RESPONSE" | jq --raw-output '.state // empty')
+
+    echo "Current entity state is: '$ENTITY_STATE'"
+
+    # Keep the Ingress UI alive while waiting for the NAS
+    if [ -z "$ENTITY_STATE" ] || \
+       [ "$ENTITY_STATE" = "off" ] || \
+       [ "$ENTITY_STATE" = "unavailable" ] || \
+       [ "$ENTITY_STATE" = "unknown" ] || \
+       [ "$ENTITY_STATE" = "false" ]; then
+
+        echo "WARNING: NAS is offline ('$ENTITY_STATE'). Entering standby mode..."
+
+        # Loop until the NAS returns to a healthy state
+        while true; do
+            sleep 60
+
+            # Re-check NAS status
+            RESPONSE=$(curl -s -X GET \
+                -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" \
+                -H "Content-Type: application/json" \
+                "http://supervisor/core/api/states/${NAS_STATUS_ENTITY}")
+
+            ENTITY_STATE=$(echo "$RESPONSE" | jq --raw-output '.state // empty')
+
+            if [ "$ENTITY_STATE" = "on" ] || [ "$ENTITY_STATE" = "home" ]; then
+                echo "NAS has reconnected! Resuming ripper script..."
+                break
+            fi
+
+            echo "NAS still offline (state: '$ENTITY_STATE'). Checking again in 60 seconds..."
+        done
+    fi
+
+    echo "NAS status verified as ONLINE. Proceeding..."
 fi
 
 # Clean up incomplete
@@ -185,6 +241,8 @@ watch_all_completed_files() {
             [ -f "$REAL_PATH" ] || exit 0
             
             FILE_SIZE=$(stat -c%s "$REAL_PATH" 2>/dev/null) || exit 0
+            # Convert minimum file size from MB to bytes
+            MIN_FILE_SIZE_BYTES=$(awk -v mb="$MIN_FILE_SIZE_MB" 'BEGIN { printf "%.0f", mb * 1024 * 1024 }')
 
             # 1. RUN AD CLEANUP PURGE CHECKS
             if [ "$FILE_SIZE" -le 0 ] || [ "$FILE_SIZE" -lt "$MIN_FILE_SIZE_BYTES" ]; then
@@ -296,7 +354,7 @@ for URL in "${STREAM_URLS[@]}"; do
 done
 
 # Python Ingress - Web UI
-echo "🚀 Starting Ingress Web UI engine on port 8099..."
+echo "🚀 Starting Ingress Web UI engine on configured port..."
 
 cat << 'EOF' > /tmp/server.py
 import os
@@ -694,6 +752,7 @@ function el(tag, text, cls){const x=document.createElement(tag);x.textContent=te
 async function loadFolder(dir='',p=0){
  currentDir=dir;page=p;document.getElementById('folders').replaceChildren();document.getElementById('songs').replaceChildren();document.getElementById('pager').replaceChildren();
  document.getElementById('editor').hidden=true;
+ stopTagRefresh();
  try{
   const d=await getJSON({api:'music_list',dir:currentDir,page:String(page)});
   const crumbs=document.getElementById('crumbs');crumbs.replaceChildren();
@@ -719,6 +778,65 @@ async function loadFolder(dir='',p=0){
   applyFilter(currentFilter);
  }catch(e){notice('Could not list folder: '+e.message);}
 }
+
+let folderRefreshTimer = null;
+let folderRefreshInProgress = false;
+
+function startFolderRefresh() {
+ if (folderRefreshTimer !== null) {
+  clearInterval(folderRefreshTimer);
+ }
+
+ folderRefreshTimer = setInterval(async () => {
+  if (document.hidden || folderRefreshInProgress) return;
+
+  folderRefreshInProgress = true;
+  try {
+   const d = await getJSON({
+    api: 'music_list',
+    dir: currentDir,
+    page: String(page)
+   });
+
+   // Refresh the current page's checkmarks without rebuilding
+   // the list or disturbing the selected file/editor.
+   const rows = document.querySelectorAll('#songs table tr');
+
+   d.files.forEach((f, i) => {
+    const row = rows[i];
+    if (!row) return;
+
+    const tagged = !!f.has_musicbrainz;
+    row.setAttribute('data-tagged', tagged ? 'true' : 'false');
+
+    const firstCell = row.querySelector('td');
+    if (!firstCell) return;
+
+    const existingCheck = firstCell.querySelector('.mb-check');
+
+    if (tagged && !existingCheck) {
+     firstCell.prepend(el('span', '✅ ', 'mb-check'));
+    } else if (!tagged && existingCheck) {
+     existingCheck.remove();
+    }
+   });
+
+   applyFilter(currentFilter);
+  } catch (e) {
+   console.warn('Could not refresh MusicBrainz checkmarks:', e);
+  } finally {
+   folderRefreshInProgress = false;
+  }
+ }, 10000);
+}
+
+function stopFolderRefresh() {
+ if (folderRefreshTimer !== null) {
+  clearInterval(folderRefreshTimer);
+  folderRefreshTimer = null;
+ }
+}
+
 function applyFilter(value) {
  currentFilter = value;
  const rows = document.querySelectorAll('#songs table tr');
@@ -737,6 +855,7 @@ async function selectFile(path){
  try{
   const d=await getJSON({api:'music_info',path});
   selected=d.path;document.getElementById('editor').hidden=false;
+  startTagRefresh();
   document.getElementById('selectedPath').textContent=d.path;
   document.getElementById('newname').value=d.name;
   const tags=document.getElementById('tags'), mb=document.getElementById('mbids');tags.replaceChildren();mb.replaceChildren();
@@ -746,6 +865,72 @@ async function selectFile(path){
   d.info.musicbrainz.forEach(t=>{const row=el('div','');row.className='tagrow';row.append(el('div',t.label,'tagkey'),el('div',t.value||'(empty)','tagvalue'));mb.append(row);});
   document.getElementById('editor').scrollIntoView({behavior:'smooth',block:'start'});
  }catch(e){notice('Could not read tags: '+e.message);}
+}
+// Automatically refresh the displayed tags for the selected MP3.
+let tagRefreshTimer = null;
+let tagRefreshInProgress = false;
+
+async function refreshCurrentTags() {
+    if (!selected || tagRefreshInProgress) return;
+    tagRefreshInProgress = true;
+    // Remember which file is selected when this request starts.
+    const requestedPath = selected;
+    try {
+      const d = await getJSON({api: 'music_info', path: requestedPath});
+        // Ignore results if the user selected another file meanwhile.
+        if (selected !== requestedPath || d.path !== requestedPath) {
+            return;
+        }
+        const tags = document.getElementById('tags');
+        const mb = document.getElementById('mbids');
+        tags.replaceChildren();
+        mb.replaceChildren();
+        if (!d.info.tags.length) {
+            tags.append(el('p', 'No ID3 tags found.'));
+        }
+        d.info.tags.forEach(t => {
+            const row = el('div', '');
+            row.className = 'tagrow';
+            row.append(
+                el('div', t.label, 'tagkey'),
+                el('div', t.value || '(empty)', 'tagvalue')
+            );
+            tags.append(row);
+        });
+        if (!d.info.musicbrainz.length) {
+            mb.append(
+                el('p', 'No MusicBrainz identifiers found.')
+            );
+        }
+        d.info.musicbrainz.forEach(t => {
+            const row = el('div', '');
+            row.className = 'tagrow';
+            row.append(
+                el('div', t.label, 'tagkey'),
+                el('div', t.value || '(empty)', 'tagvalue')
+            );
+            mb.append(row);
+        });
+    } catch (e) {
+        console.warn('Automatic ID3 tag refresh failed:', e);
+    } finally {
+        tagRefreshInProgress = false;
+    }
+}
+function startTagRefresh() {
+    stopTagRefresh();
+    tagRefreshTimer = setInterval(() => {
+        if (!document.hidden &&
+            !document.getElementById('editor').hidden) {
+            refreshCurrentTags();
+        }
+    }, 5000);
+}
+function stopTagRefresh() {
+    if (tagRefreshTimer !== null) {
+        clearInterval(tagRefreshTimer);
+        tagRefreshTimer = null;
+    }
 }
 async function saveFile(reset=false){
  if(!selected)return;
@@ -762,6 +947,7 @@ async function saveFile(reset=false){
  finally{buttons.forEach(b=>b.disabled=false);}
 }
 loadFolder('',0);
+startFolderRefresh();
 </script></body></html>"""
 
 class IngressHandler(BaseHTTPRequestHandler):
@@ -921,7 +1107,6 @@ class IngressHandler(BaseHTTPRequestHandler):
                             ⏹ Stop Recording
                         </button>
                     </form>
-                    <small style="color:#4caf50;">● Active recording</small>
                 """
             else:
                 recording_controls = f"""
@@ -932,7 +1117,6 @@ class IngressHandler(BaseHTTPRequestHandler):
                             ▶ Start Recording
                         </button>
                     </form>
-                    <small style="color:#999;">Not recording</small>
                 """
 
             saved_stream_rows += f"""
@@ -942,14 +1126,25 @@ class IngressHandler(BaseHTTPRequestHandler):
                     <small style="margin-top:3px;overflow-wrap:anywhere;white-space:normal;">
                         {safe_url}
                     </small>
-                    {recording_controls}
-                    <form method="POST" style="margin-top:8px;">
-                        <input type="hidden" name="action" value="remove_saved_stream">
-                        <input type="hidden" name="url" value="{safe_url_attr}">
-                        <button type="submit" style="background:#d32f2f;">
-                            Remove Saved Stream
-                        </button>
-                    </form>
+
+                    <div class="saved-stream-actions">
+                        {recording_controls.replace(
+                            '<form method="POST" style="margin-top:8px;">',
+                            '<form method="POST">'
+                        ).replace(
+                            '</form>',
+                            '</form>'
+                        )}
+                        <form method="POST">
+                            <input type="hidden" name="action" value="remove_saved_stream">
+                            <input type="hidden" name="url" value="{safe_url_attr}">
+                            <button type="submit" style="background:#d32f2f;">
+                                Remove
+                            </button>
+                        </form>
+                    </div>
+
+                    {('<small style="color:#4caf50;">● Active recording</small>' if url in active_urls else '<small style="color:#999;">Not recording</small>')}
                 </div>
             </li>
             """
@@ -1020,6 +1215,9 @@ class IngressHandler(BaseHTTPRequestHandler):
         .stat-value {{ font-size: 20px; font-weight: bold; margin-top: 5px; }}
         small {{ color: #999; white-space: nowrap; }}
         .form-container {{ display: block; margin-top: 16px; }}
+        .saved-stream-actions {{ display: flex; flex-direction: row; align-items: center; gap: 8px; margin-top: 8px; }}
+        .saved-stream-actions form {{ flex: 1; min-width: 0; margin: 0; }}
+        .saved-stream-actions button {{ width: 100%; margin: 0; padding: 10px 8px; font-size: 13px; }}
     </style>
 </head>
 <body>
