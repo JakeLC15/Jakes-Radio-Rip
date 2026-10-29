@@ -1,6 +1,6 @@
 name: "Jakes Station Rip Tool"
 description: "Rips multiple internet radio streams simultaneously into tagged MP3s using custom Streamripper fork and downloads authorized YouTube audio using yt-dlp"
-version: "2026.10.28-1"
+version: "2026.10.29-1"
 slug: "jakesstationrip"
 init: false
 arch:
@@ -29,7 +29,6 @@ options:
   logging: false
   nas_mount_check: false
   nas_status_entity: "binary_sensor.nas_online"
-  status_lock: "unlocked"
   min_file_size_mb: 1.0
   continuous_recording: false
   musicbrainz_tagging: true
@@ -42,7 +41,6 @@ schema:
   purge_duplicates: bool
   nas_mount_check: bool
   nas_status_entity: str
-  status_lock: str
   logging: bool
   streams:
     - str
