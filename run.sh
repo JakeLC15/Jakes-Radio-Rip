@@ -2,7 +2,7 @@
 
 echo "========================================"
 echo "JAKE'S STATION RIPPER STARTING"
-echo "BUILD TEST: 2026-10-29-2"
+echo "BUILD TEST: 2026-10-29-3"
 echo "========================================"
 
 set -uo pipefail
@@ -79,6 +79,34 @@ query_nas_state() {
     [ "$state" = "on" ] && { echo online; return; }
     echo offline
 }
+prepare_storage() {
+    # Called only after the HA NAS sensor reports ON (or monitoring is disabled).
+    # Create the output directory and first-run JSON files before publishing NAS=online.
+    mkdir -p "$BASE_OUTPUT_DIR" || {
+        echo "ERROR: Cannot create output directory: $BASE_OUTPUT_DIR"
+        return 1
+    }
+
+    if [ ! -f "$STATUS_FILE" ]; then
+        printf '{}\n' > "$STATUS_FILE" || {
+            echo "ERROR: Cannot initialize status file: $STATUS_FILE"
+            return 1
+        }
+    fi
+    if [ ! -f "$ADS_REMOVED_FILE" ]; then
+        printf '{"count":0}\n' > "$ADS_REMOVED_FILE" || return 1
+    fi
+    if [ ! -f "$DUPLICATES_REMOVED_FILE" ]; then
+        printf '{"count":0}\n' > "$DUPLICATES_REMOVED_FILE" || return 1
+    fi
+
+    # Verify that status.json is valid JSON. If it is empty/corrupt, repair it
+    # before any recording worker is allowed to call jq against it.
+    if ! jq -e 'type == "object"' "$STATUS_FILE" >/dev/null 2>&1; then
+        printf '{}\n' > "$STATUS_FILE" || return 1
+    fi
+    return 0
+}
 monitor_nas() {
     local previous current pidfile pid
     previous="$(cat "$NAS_STATE_FILE" 2>/dev/null || echo offline)"
@@ -89,10 +117,10 @@ monitor_nas() {
             current=online
         fi
         if [ "$current" != "$previous" ]; then
-            echo "$current" > "$NAS_STATE_FILE"
             if [ "$current" = "offline" ]; then
+                # Publish offline first so no wrapper can start a new write.
+                printf 'offline\n' > "$NAS_STATE_FILE"
                 echo "⚠️ NAS sensor is not ON. Pausing recording and file operations."
-                # Kill only streamripper child processes registered by our wrappers.
                 for pidfile in "$STREAM_PID_DIR"/*.pid; do
                     [ -f "$pidfile" ] || continue
                     pid=$(cat "$pidfile" 2>/dev/null || true)
@@ -100,11 +128,18 @@ monitor_nas() {
                     kill -TERM "$pid" 2>/dev/null || true
                 done
             else
-                echo "✅ NAS sensor is ON. Initializing storage and resuming recording."
-                mkdir -p "$BASE_OUTPUT_DIR" || true
-                [ -f "$ADS_REMOVED_FILE" ] || echo '{"count":0}' > "$ADS_REMOVED_FILE" 2>/dev/null || true
-                [ -f "$DUPLICATES_REMOVED_FILE" ] || echo '{"count":0}' > "$DUPLICATES_REMOVED_FILE" 2>/dev/null || true
-                find "$BASE_OUTPUT_DIR" -type f -path "*/incomplete/*" -delete 2>/dev/null || true
+                echo "NAS sensor is ON. Preparing storage before resuming recording..."
+                if prepare_storage; then
+                    # Publish online only after status.json and counters are ready.
+                    printf 'online\n' > "$NAS_STATE_FILE"
+                    echo "🧹 Cleaning old incomplete files..."
+                    find "$BASE_OUTPUT_DIR" -type f -path "*/incomplete/*" -delete 2>/dev/null || true
+                    echo "✅ Storage ready. Recording may resume."
+                else
+                    current=offline
+                    printf 'offline\n' > "$NAS_STATE_FILE"
+                    echo "⚠️ Could not initialize NAS output directory; remaining paused."
+                fi
             fi
             previous="$current"
         fi
@@ -112,19 +147,17 @@ monitor_nas() {
     done
 }
 if [ "$NAS_MOUNT_CHECK" = "true" ]; then
-    echo offline > "$NAS_STATE_FILE"
+    printf 'offline\n' > "$NAS_STATE_FILE"
     echo "NAS monitoring enabled for entity: $NAS_STATUS_ENTITY"
+    monitor_nas &
+    NAS_MONITOR_PID=$!
 else
-    echo online > "$NAS_STATE_FILE"
-fi
-monitor_nas &
-NAS_MONITOR_PID=$!
-
-# Never touch the configured output directory until the NAS sensor says ON.
-if nas_state_is_online; then
-    mkdir -p "$BASE_OUTPUT_DIR"
-    [ -f "$ADS_REMOVED_FILE" ] || echo '{"count":0}' > "$ADS_REMOVED_FILE"
-    [ -f "$DUPLICATES_REMOVED_FILE" ] || echo '{"count":0}' > "$DUPLICATES_REMOVED_FILE"
+    if prepare_storage; then
+        printf 'online\n' > "$NAS_STATE_FILE"
+    else
+        echo "ERROR: Could not initialize output directory: $BASE_OUTPUT_DIR"
+        exit 1
+    fi
     echo "🧹 Cleaning old incomplete files..."
     find "$BASE_OUTPUT_DIR" -type f -path "*/incomplete/*" -delete 2>/dev/null || true
 fi
@@ -136,19 +169,29 @@ update_status() {
     local status="$2"
     local reconnects="${3:-0}"
     local error="${4:-}"
+    local status_dir
+    status_dir=$(dirname "$STATUS_FILE")
+    mkdir -p "$status_dir" 2>/dev/null || return 0
+
     (
-        flock 200
-        TMP_FILE="${STATUS_FILE}.$$"
+        flock 200 || exit 0
+        # First-run safeguard: create the JSON file while holding the same lock
+        # used by all status writers, so concurrent stream workers cannot race.
+        if [ ! -f "$STATUS_FILE" ] || ! jq -e 'type == "object"' "$STATUS_FILE" >/dev/null 2>&1; then
+            printf '{}\n' > "$STATUS_FILE" || exit 0
+        fi
+
+        local tmp_file="${STATUS_FILE}.$$"
         if jq \
             --arg station "$station" \
             --arg status "$status" \
             --argjson reconnects "$reconnects" \
             --arg error "$error" \
             '. + {($station): {status: $status, reconnects: $reconnects, last_error: $error}}' \
-            "$STATUS_FILE" > "$TMP_FILE"; then
-            mv "$TMP_FILE" "$STATUS_FILE"
+            "$STATUS_FILE" > "$tmp_file"; then
+            mv "$tmp_file" "$STATUS_FILE"
         else
-            rm -f "$TMP_FILE"
+            rm -f "$tmp_file"
             echo "⚠️ Failed to update status for $station"
         fi
     ) 200>"$STATUS_LOCK"
@@ -1076,29 +1119,10 @@ class IngressHandler(BaseHTTPRequestHandler):
         except:
             return 0
 
-    def _send_nas_status(self):
-        online = nas_is_online()
-    
-        response = json.dumps({"online": online}).encode("utf-8")
-    
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(response)))
-        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
-        self.end_headers()
-        self.wfile.write(response)
-    
     def _render_page(self):
         files, today_count = self._get_files()
-        nas_notice = """
-        <div id="nas-warning" class="card"
-             style="border:1px solid #f90;color:#ffcc80;display:none;">
-            <strong>NAS OFFLINE</strong><br>
-            Recording and library file operations are paused.
-            The interface will remain available and recording will resume
-            when the NAS sensor returns to ON.
-        </div>
-        """
+        nas_notice = ("<div class=\"card\" style=\"border:1px solid #f90;color:#ffcc80\"><strong>NAS OFFLINE</strong><br>Recording and library file operations are paused. The interface will remain available and recording will resume when the NAS sensor returns to ON.</div>" if not nas_is_online() else "")
+
         current_count = len(files)
         ads_removed = self._get_ads_removed()
         duplicates_removed = self._get_duplicates_removed()
@@ -1609,27 +1633,6 @@ class IngressHandler(BaseHTTPRequestHandler):
             }}
         }}, 10000);
     </script>
-
-    <script>
-    async function refreshNasStatus() {{
-        try {{
-            const response = await fetch("nas-status", {{ cache: "no-store" }});
-            if (!response.ok) throw new Error("NAS status request failed");
-    
-            const data = await response.json();
-            const warning = document.getElementById("nas-warning");
-    
-            if (warning) {{
-                warning.style.display = data.online ? "none" : "block";
-            }}
-        }} catch (error) {{
-            console.error("Unable to refresh NAS status:", error);
-        }}
-    }}
-    
-    refreshNasStatus();
-    setInterval(refreshNasStatus, 10000);
-    </script>
 </body>
 </html>"""
 
@@ -1895,10 +1898,6 @@ class IngressHandler(BaseHTTPRequestHandler):
         params = parse_qs(parsed.query)
         api = params.get("api", [""])[0]
         try:
-            if self.path.split("?")[0].rstrip("/") == "/nas-status":
-                self._send_nas_status()
-                return
-                
             if api == "music_list":
                 require_nas_online()
                 relative = params.get("dir", [""])[0]
@@ -2049,5 +2048,6 @@ python3 /tmp/server.py &
 PYTHON_PID=$!
 
 # Wait for Python server
+
 
 wait "$PYTHON_PID"
