@@ -1,0 +1,40 @@
+{
+  "configuration": {
+    "nas_mount_check": {
+      "name": "Enable NAS Storage Protection",
+      "description": "Turn this on if you are saving music to a Network Attached Storage (NAS) share. It automatically halts the script if the NAS goes offline, preventing your Home Assistant local storage from filling up to 100%."
+    },
+    "nas_status_entity": {
+      "name": "Home Assistant NAS Status Entity",
+      "description": "Enter the entity ID of a Home Assistant helper switch, ping sensor, or binary sensor tracking your NAS status (e.g., 'input_boolean.nas_online'). If this entity is off, false, or disconnected, the ripper will pause. This sensors on, true or connected status means the drive is online and ready to be written to."
+    },
+    "min_file_size_mb": {
+      "name": "Minimum File Size Threshold (MB)",
+      "description": "Sets the minimum file size limit in megabytes. Files smaller than this value (such as short ads, station jingles, or interrupted streams) will be automatically filtered out and deleted."
+    },
+    "continuous_recording": {
+      "name": "Continuous Recording Mode",
+      "description": "Enable this to keep the stream ripper running infinitely in the background. It will automatically restart the recording capture loop if the radio stream disconnects or drops."
+    },
+    "musicbrainz_tagging": {
+      "name": "Automatic Tagging",
+      "description": "Tag tracks with metadata from MusicBrainz. Any MP3 saved in your Jake's Station Ripper Tool directory will be automatically sent for tagging."
+    },
+    "purge_duplicates": {
+      "name": "Purge Duplicates",
+      "description": "Automatically purge duplicate tracks. Example: Artist - Song(1).mp3"
+    },
+    "logging": {
+      "name": "Verbose Logging (Optional)",
+      "description": "Enable streamripper logging, very spammy! 1 stream recommended"
+    },
+    "streams": {
+      "name": "Music Streams",
+      "description": "Music Stream URLs. Setup in UI"
+    },
+    "output_dir": {
+      "name": "Output Directory",
+      "description": "Create directory to save to. NAS/Ext drive recommended"
+    }
+  }
+}

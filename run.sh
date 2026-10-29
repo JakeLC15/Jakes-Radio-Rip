@@ -2,7 +2,7 @@
 
 echo "========================================"
 echo "JAKE'S STATION RIPPER STARTING"
-echo "BUILD TEST: 2026-10-26-2"
+echo "BUILD TEST: 2026-10-29-1"
 echo "========================================"
 
 set -uo pipefail
@@ -23,6 +23,15 @@ MIN_FILE_SIZE_MB="1.0"
 MUSICBRAINZ_TAGGING="true"
 PURGE_DUPLICATES="true"
 
+# Universal storage configuration defaults
+NAS_MOUNT_CHECK="false"
+NAS_STATUS_ENTITY=""
+NAS_STATE_FILE="/tmp/jakes_station_ripper_nas_state"
+NAS_MONITOR_PID=""
+STREAM_PID_DIR="/tmp/jakes_station_ripper_pids"
+mkdir -p "$STREAM_PID_DIR"
+echo "online" > "$NAS_STATE_FILE"
+
 STREAM_URLS=()
 
 if [ -f "$CONFIG_PATH" ]; then
@@ -32,49 +41,97 @@ if [ -f "$CONFIG_PATH" ]; then
     CONTINUOUS_RECORDING=$(jq --raw-output '.continuous_recording // false' "$CONFIG_PATH")
     MUSICBRAINZ_TAGGING=$(jq --raw-output '.musicbrainz_tagging // true' "$CONFIG_PATH")
     PURGE_DUPLICATES=$(jq --raw-output '.purge_duplicates // true' "$CONFIG_PATH")
+    
+    NAS_MOUNT_CHECK=$(jq --raw-output '.nas_mount_check // ""' "$CONFIG_PATH")
+    NAS_STATUS_ENTITY=$(jq --raw-output '.nas_status_entity // ""' "$CONFIG_PATH")
+
     mapfile -t STREAM_URLS < <(jq --raw-output '.streams[] // empty' "$CONFIG_PATH")
 fi
 
-if [ ${#STREAM_URLS[@]} -eq 0 ]; then
-    echo "⚠️ No streams configured. The Ingress UI will remain available so you can add one."
-fi
-
-mkdir -p "$BASE_OUTPUT_DIR"
-
-STATUS_FILE="${BASE_OUTPUT_DIR}/status.json"
-STATUS_LOCK="${BASE_OUTPUT_DIR}/status.lock"
-START_TIME=$(date +%s)
-MIN_FILE_SIZE_BYTES=$(awk -v mb="$MIN_FILE_SIZE_MB" \
-    'BEGIN { printf "%.0f", mb * 1024 * 1024 }')
-    
-echo "Minimum retained MP3 size: ${MIN_FILE_SIZE_MB} MB"
-echo "MusicBrainz Auto-Tagging Enabled: ${MUSICBRAINZ_TAGGING}" # Log configuration visibility
-echo "{}" > "$STATUS_FILE"
 
 ADS_REMOVED_FILE="${BASE_OUTPUT_DIR}/ads_removed.json"
 ADS_REMOVED_LOCK="${BASE_OUTPUT_DIR}/ads_removed.lock"
 DUPLICATES_REMOVED_FILE="${BASE_OUTPUT_DIR}/duplicates_removed.json"
 DUPLICATES_REMOVED_LOCK="${BASE_OUTPUT_DIR}/duplicates_removed.lock"
+STATUS_FILE="${BASE_OUTPUT_DIR}/status.json"
+STATUS_LOCK="${BASE_OUTPUT_DIR}/status.lock"
 
+export STATUS_FILE
+export STATUS_LOCK
 export ADS_REMOVED_FILE
 export ADS_REMOVED_LOCK
 export DUPLICATES_REMOVED_FILE
 export DUPLICATES_REMOVED_LOCK
 
-if [ ! -f "$ADS_REMOVED_FILE" ]; then
-    echo '{"count":0}' > "$ADS_REMOVED_FILE"
+# NAS state is shared with the Python Ingress server. The HA entity is the source
+# of truth when checking is enabled; API failures fail closed (offline).
+export NAS_MOUNT_CHECK NAS_STATUS_ENTITY NAS_STATE_FILE
+nas_state_is_online() {
+    [ "$NAS_MOUNT_CHECK" != "true" ] || [ "$(cat "$NAS_STATE_FILE" 2>/dev/null)" = "online" ]
+}
+query_nas_state() {
+    local response state
+    response=$(curl -fsS --connect-timeout 2 --max-time 4 \
+        -H "Authorization: Bearer ${SUPERVISOR_TOKEN:-}" \
+        -H "Content-Type: application/json" \
+        "http://supervisor/core/api/states/${NAS_STATUS_ENTITY}" 2>/dev/null) || { echo offline; return; }
+    state=$(printf '%s' "$response" | jq -r '.state // "unknown"' 2>/dev/null)
+    [ "$state" = "on" ] && { echo online; return; }
+    echo offline
+}
+monitor_nas() {
+    local previous current pidfile pid
+    previous="$(cat "$NAS_STATE_FILE" 2>/dev/null || echo offline)"
+    while true; do
+        if [ "$NAS_MOUNT_CHECK" = "true" ]; then
+            current=$(query_nas_state)
+        else
+            current=online
+        fi
+        if [ "$current" != "$previous" ]; then
+            echo "$current" > "$NAS_STATE_FILE"
+            if [ "$current" = "offline" ]; then
+                echo "⚠️ NAS sensor is not ON. Pausing recording and file operations."
+                # Kill only streamripper child processes registered by our wrappers.
+                for pidfile in "$STREAM_PID_DIR"/*.pid; do
+                    [ -f "$pidfile" ] || continue
+                    pid=$(cat "$pidfile" 2>/dev/null || true)
+                    case "$pid" in ''|*[!0-9]*) continue ;; esac
+                    kill -TERM "$pid" 2>/dev/null || true
+                done
+            else
+                echo "✅ NAS sensor is ON. Initializing storage and resuming recording."
+                mkdir -p "$BASE_OUTPUT_DIR" || true
+                [ -f "$ADS_REMOVED_FILE" ] || echo '{"count":0}' > "$ADS_REMOVED_FILE" 2>/dev/null || true
+                [ -f "$DUPLICATES_REMOVED_FILE" ] || echo '{"count":0}' > "$DUPLICATES_REMOVED_FILE" 2>/dev/null || true
+                find "$BASE_OUTPUT_DIR" -type f -path "*/incomplete/*" -delete 2>/dev/null || true
+            fi
+            previous="$current"
+        fi
+        sleep 10
+    done
+}
+if [ "$NAS_MOUNT_CHECK" = "true" ]; then
+    echo offline > "$NAS_STATE_FILE"
+    echo "NAS monitoring enabled for entity: $NAS_STATUS_ENTITY"
+else
+    echo online > "$NAS_STATE_FILE"
 fi
+monitor_nas &
+NAS_MONITOR_PID=$!
 
-if [ ! -f "$DUPLICATES_REMOVED_FILE" ]; then
-    echo '{"count":0}' > "$DUPLICATES_REMOVED_FILE"
+# Never touch the configured output directory until the NAS sensor says ON.
+if nas_state_is_online; then
+    mkdir -p "$BASE_OUTPUT_DIR"
+    [ -f "$ADS_REMOVED_FILE" ] || echo '{"count":0}' > "$ADS_REMOVED_FILE"
+    [ -f "$DUPLICATES_REMOVED_FILE" ] || echo '{"count":0}' > "$DUPLICATES_REMOVED_FILE"
+    echo "🧹 Cleaning old incomplete files..."
+    find "$BASE_OUTPUT_DIR" -type f -path "*/incomplete/*" -delete 2>/dev/null || true
 fi
-
-# Clean up incomplete
-echo "🧹 Cleaning old incomplete files..."
-find "$BASE_OUTPUT_DIR" -type f -path "*/incomplete/*" -delete 2>/dev/null
 
 # Status function
 update_status() {
+    nas_state_is_online || return 0
     local station="$1"
     local status="$2"
     local reconnects="${3:-0}"
@@ -151,8 +208,9 @@ increment_duplicates_removed() {
 # File monitor
 watch_all_completed_files() {
     echo "👀 MP3 monitoring and cleanup started: $BASE_OUTPUT_DIR"
-
-    inotifywait \
+    while true; do
+      while ! nas_state_is_online; do sleep 5; done
+      inotifywait \
         --monitor \
         --quiet \
         --recursive \
@@ -161,6 +219,7 @@ watch_all_completed_files() {
         --format '%w%f' \
         "$BASE_OUTPUT_DIR" |
     while IFS= read -r REAL_PATH; do
+        nas_state_is_online || continue
 
         case "$REAL_PATH" in
             *.mp3|*.MP3) ;;
@@ -190,16 +249,19 @@ watch_all_completed_files() {
             sleep 2
 
             # FIX: Fast safety exit. If another concurrent process or loop step deleted this file, stop now!
+            nas_state_is_online || exit 0
             [ -f "$REAL_PATH" ] || exit 0
             
             FILE_SIZE=$(stat -c%s "$REAL_PATH" 2>/dev/null) || exit 0
+            # Convert minimum file size from MB to bytes
+            MIN_FILE_SIZE_BYTES=$(awk -v mb="$MIN_FILE_SIZE_MB" 'BEGIN { printf "%.0f", mb * 1024 * 1024 }')
 
             # 1. RUN AD CLEANUP PURGE CHECKS
             if [ "$FILE_SIZE" -le 0 ] || [ "$FILE_SIZE" -lt "$MIN_FILE_SIZE_BYTES" ]; then
                 sleep 3
                 [ -f "$REAL_PATH" ] || exit 0
                 CURRENT_SIZE=$(stat -c%s "$REAL_PATH" 2>/dev/null) || exit 0
-                if [ "$CURRENT_SIZE" -eq "$FILE_SIZE" ] ; then
+                if nas_state_is_online && [ "$CURRENT_SIZE" -eq "$FILE_SIZE" ] ; then
                     STREAM_SOURCE=$(basename "$(dirname "$REAL_PATH")")
                     echo "🧹 [$STREAM_SOURCE] Removing small advertisement MP3: $REAL_PATH"
                     if rm -f -- "$REAL_PATH"; then
@@ -212,13 +274,15 @@ watch_all_completed_files() {
             # 2. FILE IS VALID -> EXECUTE MUSICBRAINZ AUTO-TAGGING NATIVELY
             if [ "${MUSICBRAINZ_TAGGING}" = "true" ]; then
                 # Double-check file existence one last time before hitting the python interpreter engine
-                if [ -f "$REAL_PATH" ]; then
+                if nas_state_is_online && [ -f "$REAL_PATH" ]; then
                     echo "🎵 [Watcher] Passing completed track to tagger: $RAW_TITLE"
                     python3 /tagger.py "$REAL_PATH" "$RAW_TITLE"
                 fi
             fi
         ) &
 
+      done
+      sleep 2
     done
 }
 
@@ -247,8 +311,12 @@ for URL in "${STREAM_URLS[@]}"; do
         RECONNECTS=0
     
         for ((attempt=1; attempt<=MAX_RETRIES; attempt++)); do
+            # Wait without touching the output path while the NAS is unavailable.
+            while ! nas_state_is_online; do
+                sleep 5
+            done
             echo "Starting Streamripper for $FOLDER_NAME..."
-            mkdir -p "$STREAM_DIR"
+            mkdir -p "$STREAM_DIR" || { sleep 5; continue; }
             update_status "$FOLDER_NAME" "Ripping" "$RECONNECTS" ""
 
             if [ "${CONTINUOUS_RECORDING}" = "true" ]; then
@@ -279,9 +347,18 @@ for URL in "${STREAM_URLS[@]}"; do
 
            CLEANUP_PID=""
             
-            streamripper "${RIPPER_ARGS[@]}"
-            
+            streamripper "${RIPPER_ARGS[@]}" &
+            STREAM_PID=$!
+            PID_FILE="$STREAM_PID_DIR/${BASHPID}.pid"
+            echo "$STREAM_PID" > "$PID_FILE"
+            wait "$STREAM_PID"
             RC=$?
+            rm -f "$PID_FILE"
+            if ! nas_state_is_online; then
+                echo "NAS went offline during recording for $FOLDER_NAME; waiting to resume."
+                attempt=$((attempt - 1))
+                continue
+            fi
             
             # Stop the file watcher after Streamripper exits
             if [ -n "$CLEANUP_PID" ]; then
@@ -304,7 +381,7 @@ for URL in "${STREAM_URLS[@]}"; do
 done
 
 # Python Ingress - Web UI
-echo "🚀 Starting Ingress Web UI engine on port 8099..."
+echo "🚀 Starting Ingress Web UI engine on configured port..."
 
 cat << 'EOF' > /tmp/server.py
 import os
@@ -339,6 +416,9 @@ def is_youtube_url(url):
 
 def run_youtube_download(url, playlist):
     global DOWNLOAD_PROCESS
+    if not nas_is_online():
+        update_download_state("Paused", "NAS is offline. Reconnect the NAS before downloading.")
+        return
     if not DOWNLOAD_LOCK.acquire(blocking=False):
         update_download_state("Busy", "A YouTube download is already running. Please wait.")
         return
@@ -370,6 +450,9 @@ def run_youtube_download(url, playlist):
         else:
             download_dir = YOUTUBE_DIR
 
+        if not nas_is_online():
+            update_download_state("Paused", "NAS went offline before the download could start.")
+            return
         os.makedirs(download_dir, exist_ok=True)
         update_download_state(
             "Running",
@@ -395,6 +478,16 @@ def run_youtube_download(url, playlist):
             DOWNLOAD_PROCESS = proc
             tail = []
             for line in proc.stdout:
+                if not nas_is_online():
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                        proc.wait()
+                    update_download_state("Paused", "NAS went offline; the download was stopped.")
+                    DOWNLOAD_PROCESS = None
+                    return
                 log.write(line)
                 log.flush()
                 stripped = line.strip()
@@ -416,6 +509,21 @@ def run_youtube_download(url, playlist):
         DOWNLOAD_LOCK.release()
 
 BASE_OUTPUT_DIR = os.environ.get("BASE_OUTPUT_DIR", "/media/stationripper")
+NAS_MOUNT_CHECK = os.environ.get("NAS_MOUNT_CHECK", "false").lower() == "true"
+NAS_STATE_FILE = os.environ.get("NAS_STATE_FILE", "/tmp/jakes_station_ripper_nas_state")
+def nas_is_online():
+    if not NAS_MOUNT_CHECK:
+        return True
+    try:
+        with open(NAS_STATE_FILE, "r", encoding="utf-8") as state_file:
+            return state_file.read().strip() == "online"
+    except OSError:
+        return False
+
+def require_nas_online():
+    if not nas_is_online():
+        raise RuntimeError("NAS is offline. File operations are paused until the NAS sensor returns to ON.")
+
 STATUS_FILE = os.environ.get("STATUS_FILE", f"{BASE_OUTPUT_DIR}/status.json")
 START_TIME = int(os.environ.get("START_TIME", time.time()))
 ADS_REMOVED_FILE = os.environ.get(
@@ -702,6 +810,7 @@ function el(tag, text, cls){const x=document.createElement(tag);x.textContent=te
 async function loadFolder(dir='',p=0){
  currentDir=dir;page=p;document.getElementById('folders').replaceChildren();document.getElementById('songs').replaceChildren();document.getElementById('pager').replaceChildren();
  document.getElementById('editor').hidden=true;
+ stopTagRefresh();
  try{
   const d=await getJSON({api:'music_list',dir:currentDir,page:String(page)});
   const crumbs=document.getElementById('crumbs');crumbs.replaceChildren();
@@ -727,6 +836,65 @@ async function loadFolder(dir='',p=0){
   applyFilter(currentFilter);
  }catch(e){notice('Could not list folder: '+e.message);}
 }
+
+let folderRefreshTimer = null;
+let folderRefreshInProgress = false;
+
+function startFolderRefresh() {
+ if (folderRefreshTimer !== null) {
+  clearInterval(folderRefreshTimer);
+ }
+
+ folderRefreshTimer = setInterval(async () => {
+  if (document.hidden || folderRefreshInProgress) return;
+
+  folderRefreshInProgress = true;
+  try {
+   const d = await getJSON({
+    api: 'music_list',
+    dir: currentDir,
+    page: String(page)
+   });
+
+   // Refresh the current page's checkmarks without rebuilding
+   // the list or disturbing the selected file/editor.
+   const rows = document.querySelectorAll('#songs table tr');
+
+   d.files.forEach((f, i) => {
+    const row = rows[i];
+    if (!row) return;
+
+    const tagged = !!f.has_musicbrainz;
+    row.setAttribute('data-tagged', tagged ? 'true' : 'false');
+
+    const firstCell = row.querySelector('td');
+    if (!firstCell) return;
+
+    const existingCheck = firstCell.querySelector('.mb-check');
+
+    if (tagged && !existingCheck) {
+     firstCell.prepend(el('span', '✅ ', 'mb-check'));
+    } else if (!tagged && existingCheck) {
+     existingCheck.remove();
+    }
+   });
+
+   applyFilter(currentFilter);
+  } catch (e) {
+   console.warn('Could not refresh MusicBrainz checkmarks:', e);
+  } finally {
+   folderRefreshInProgress = false;
+  }
+ }, 10000);
+}
+
+function stopFolderRefresh() {
+ if (folderRefreshTimer !== null) {
+  clearInterval(folderRefreshTimer);
+  folderRefreshTimer = null;
+ }
+}
+
 function applyFilter(value) {
  currentFilter = value;
  const rows = document.querySelectorAll('#songs table tr');
@@ -745,6 +913,7 @@ async function selectFile(path){
  try{
   const d=await getJSON({api:'music_info',path});
   selected=d.path;document.getElementById('editor').hidden=false;
+  startTagRefresh();
   document.getElementById('selectedPath').textContent=d.path;
   document.getElementById('newname').value=d.name;
   const tags=document.getElementById('tags'), mb=document.getElementById('mbids');tags.replaceChildren();mb.replaceChildren();
@@ -754,6 +923,72 @@ async function selectFile(path){
   d.info.musicbrainz.forEach(t=>{const row=el('div','');row.className='tagrow';row.append(el('div',t.label,'tagkey'),el('div',t.value||'(empty)','tagvalue'));mb.append(row);});
   document.getElementById('editor').scrollIntoView({behavior:'smooth',block:'start'});
  }catch(e){notice('Could not read tags: '+e.message);}
+}
+// Automatically refresh the displayed tags for the selected MP3.
+let tagRefreshTimer = null;
+let tagRefreshInProgress = false;
+
+async function refreshCurrentTags() {
+    if (!selected || tagRefreshInProgress) return;
+    tagRefreshInProgress = true;
+    // Remember which file is selected when this request starts.
+    const requestedPath = selected;
+    try {
+      const d = await getJSON({api: 'music_info', path: requestedPath});
+        // Ignore results if the user selected another file meanwhile.
+        if (selected !== requestedPath || d.path !== requestedPath) {
+            return;
+        }
+        const tags = document.getElementById('tags');
+        const mb = document.getElementById('mbids');
+        tags.replaceChildren();
+        mb.replaceChildren();
+        if (!d.info.tags.length) {
+            tags.append(el('p', 'No ID3 tags found.'));
+        }
+        d.info.tags.forEach(t => {
+            const row = el('div', '');
+            row.className = 'tagrow';
+            row.append(
+                el('div', t.label, 'tagkey'),
+                el('div', t.value || '(empty)', 'tagvalue')
+            );
+            tags.append(row);
+        });
+        if (!d.info.musicbrainz.length) {
+            mb.append(
+                el('p', 'No MusicBrainz identifiers found.')
+            );
+        }
+        d.info.musicbrainz.forEach(t => {
+            const row = el('div', '');
+            row.className = 'tagrow';
+            row.append(
+                el('div', t.label, 'tagkey'),
+                el('div', t.value || '(empty)', 'tagvalue')
+            );
+            mb.append(row);
+        });
+    } catch (e) {
+        console.warn('Automatic ID3 tag refresh failed:', e);
+    } finally {
+        tagRefreshInProgress = false;
+    }
+}
+function startTagRefresh() {
+    stopTagRefresh();
+    tagRefreshTimer = setInterval(() => {
+        if (!document.hidden &&
+            !document.getElementById('editor').hidden) {
+            refreshCurrentTags();
+        }
+    }, 5000);
+}
+function stopTagRefresh() {
+    if (tagRefreshTimer !== null) {
+        clearInterval(tagRefreshTimer);
+        tagRefreshTimer = null;
+    }
 }
 async function saveFile(reset=false){
  if(!selected)return;
@@ -770,10 +1005,13 @@ async function saveFile(reset=false){
  finally{buttons.forEach(b=>b.disabled=false);}
 }
 loadFolder('',0);
+startFolderRefresh();
 </script></body></html>"""
 
 class IngressHandler(BaseHTTPRequestHandler):
     def _get_files(self):
+        if not nas_is_online():
+            return [], 0
         files = []
         today = datetime.now().date()
         today_count = 0
@@ -819,6 +1057,8 @@ class IngressHandler(BaseHTTPRequestHandler):
         return f"{minutes}m {seconds}s"
 
     def _get_ads_removed(self):
+        if not nas_is_online():
+            return 0
         try:
             with open(ADS_REMOVED_FILE, "r") as f:
                 data = json.load(f)
@@ -827,6 +1067,8 @@ class IngressHandler(BaseHTTPRequestHandler):
             return 0
             
     def _get_duplicates_removed(self):
+        if not nas_is_online():
+            return 0
         try:
             with open(DUPLICATES_REMOVED_FILE, "r") as f:
                 data = json.load(f)
@@ -836,12 +1078,15 @@ class IngressHandler(BaseHTTPRequestHandler):
 
     def _render_page(self):
         files, today_count = self._get_files()
+        nas_notice = ("<div class=\"card\" style=\"border:1px solid #f90;color:#ffcc80\"><strong>NAS OFFLINE</strong><br>Recording and library file operations are paused. The interface will remain available and recording will resume when the NAS sensor returns to ON.</div>" if not nas_is_online() else "")
 
         current_count = len(files)
         ads_removed = self._get_ads_removed()
         duplicates_removed = self._get_duplicates_removed()
 
         try:
+            if not nas_is_online():
+                raise OSError("NAS offline")
             usage = shutil.disk_usage(BASE_OUTPUT_DIR)
             disk_used = self._format_size(usage.used)
             disk_free = self._format_size(usage.free)
@@ -854,7 +1099,7 @@ class IngressHandler(BaseHTTPRequestHandler):
         station_rows = ""
         reconnect_rows = ""
 
-        if os.path.exists(STATUS_FILE):
+        if nas_is_online() and os.path.exists(STATUS_FILE):
             try:
                 with open(STATUS_FILE, 'r') as f:
                     data = json.load(f)
@@ -929,7 +1174,6 @@ class IngressHandler(BaseHTTPRequestHandler):
                             ⏹ Stop Recording
                         </button>
                     </form>
-                    <small style="color:#4caf50;">● Active recording</small>
                 """
             else:
                 recording_controls = f"""
@@ -940,7 +1184,6 @@ class IngressHandler(BaseHTTPRequestHandler):
                             ▶ Start Recording
                         </button>
                     </form>
-                    <small style="color:#999;">Not recording</small>
                 """
 
             saved_stream_rows += f"""
@@ -950,14 +1193,25 @@ class IngressHandler(BaseHTTPRequestHandler):
                     <small style="margin-top:3px;overflow-wrap:anywhere;white-space:normal;">
                         {safe_url}
                     </small>
-                    {recording_controls}
-                    <form method="POST" style="margin-top:8px;">
-                        <input type="hidden" name="action" value="remove_saved_stream">
-                        <input type="hidden" name="url" value="{safe_url_attr}">
-                        <button type="submit" style="background:#d32f2f;">
-                            Remove Saved Stream
-                        </button>
-                    </form>
+
+                    <div class="saved-stream-actions">
+                        {recording_controls.replace(
+                            '<form method="POST" style="margin-top:8px;">',
+                            '<form method="POST">'
+                        ).replace(
+                            '</form>',
+                            '</form>'
+                        )}
+                        <form method="POST">
+                            <input type="hidden" name="action" value="remove_saved_stream">
+                            <input type="hidden" name="url" value="{safe_url_attr}">
+                            <button type="submit" style="background:#d32f2f;">
+                                Remove
+                            </button>
+                        </form>
+                    </div>
+
+                    {('<small style="color:#4caf50;">● Active recording</small>' if url in active_urls else '<small style="color:#999;">Not recording</small>')}
                 </div>
             </li>
             """
@@ -1028,10 +1282,13 @@ class IngressHandler(BaseHTTPRequestHandler):
         .stat-value {{ font-size: 20px; font-weight: bold; margin-top: 5px; }}
         small {{ color: #999; white-space: nowrap; }}
         .form-container {{ display: block; margin-top: 16px; }}
+        .saved-stream-actions {{ display: flex; flex-direction: row; align-items: center; gap: 8px; margin-top: 8px; }}
+        .saved-stream-actions form {{ flex: 1; min-width: 0; margin: 0; }}
+        .saved-stream-actions button {{ width: 100%; margin: 0; padding: 10px 8px; font-size: 13px; }}
     </style>
 </head>
 <body>
-
+    {nas_notice}
     <div class="card">
         <h2>📻 Live Stream Status</h2>
         <ul id="station-list">{station_rows}</ul>
@@ -1345,6 +1602,7 @@ class IngressHandler(BaseHTTPRequestHandler):
 
             if action == "edit_music_tags":
                 try:
+                    require_nas_online()
                     relative = form.get("path", [""])[0]
                     new_name = form.get("new_name", [""])[0].strip()
                     reset_mb = form.get("reset_musicbrainz", ["no"])[0] == "yes"
@@ -1403,6 +1661,7 @@ class IngressHandler(BaseHTTPRequestHandler):
                 return
 
             if action == "youtube_download":
+                require_nas_online()
                 url = form.get("url", [""])[0].strip()
                 playlist = form.get("playlist", [""])[0] == "yes"
                 if not is_youtube_url(url):
@@ -1545,6 +1804,7 @@ class IngressHandler(BaseHTTPRequestHandler):
                 return
 
             elif action == "purge_duplicates":
+                require_nas_online()
                 subprocess.run(
                     [
                         "bash", "-c",
@@ -1596,6 +1856,7 @@ class IngressHandler(BaseHTTPRequestHandler):
         api = params.get("api", [""])[0]
         try:
             if api == "music_list":
+                require_nas_online()
                 relative = params.get("dir", [""])[0]
                 folder = music_path(relative)
                 if not os.path.isdir(folder):
@@ -1655,6 +1916,7 @@ class IngressHandler(BaseHTTPRequestHandler):
                 self.wfile.write(payload)
                 return
             elif api == "music_info":
+                require_nas_online()
                 path = music_path(params.get("path", [""])[0])
                 if not os.path.isfile(path) or not path.lower().endswith(".mp3"):
                     raise ValueError("Select an existing MP3 file.")
@@ -1694,7 +1956,7 @@ if __name__ == '__main__':
 EOF
 
 # Export environment paths to python sub-process scope
-export BASE_OUTPUT_DIR STATUS_FILE START_TIME ADS_REMOVED_FILE DUPLICATES_REMOVED_FILE MIN_FILE_SIZE_MB MUSICBRAINZ_TAGGING PURGE_DUPLICATES
+export BASE_OUTPUT_DIR STATUS_FILE START_TIME ADS_REMOVED_FILE DUPLICATES_REMOVED_FILE MIN_FILE_SIZE_MB MUSICBRAINZ_TAGGING PURGE_DUPLICATES NAS_MOUNT_CHECK NAS_STATUS_ENTITY NAS_STATE_FILE
 
 # Shutdown function
 shutdown_handler() {
@@ -1702,6 +1964,9 @@ shutdown_handler() {
 
     if [ -n "${GLOBAL_WATCHER_PID:-}" ]; then
         kill "$GLOBAL_WATCHER_PID" 2>/dev/null || true
+    fi
+    if [ -n "${NAS_MONITOR_PID:-}" ]; then
+        kill "$NAS_MONITOR_PID" 2>/dev/null || true
     fi
 
     # Stop Python server

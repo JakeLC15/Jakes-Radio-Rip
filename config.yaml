@@ -1,6 +1,6 @@
 name: "Jakes Station Rip Tool"
 description: "Rips multiple internet radio streams simultaneously into tagged MP3s using custom Streamripper fork and downloads authorized YouTube audio using yt-dlp"
-version: "2026.10.26-2"
+version: "2026.10.29-1"
 slug: "jakesstationrip"
 init: false
 arch:
@@ -9,6 +9,7 @@ arch:
 startup: "application"
 boot: "auto"
 url: "https://github.com/JakeLC15/Jakes-Radio-Rip"
+homeassistant_api: true
 hassio_api: true
 hassio_role: manager
 ingress: true
@@ -26,16 +27,20 @@ options:
   output_dir: "/media/music/jakes_station_rip"
   streams: []
   logging: false
+  nas_mount_check: false
+  nas_status_entity: "binary_sensor.nas_online"
   min_file_size_mb: 1.0
   continuous_recording: false
   musicbrainz_tagging: true
   purge_duplicates: true
 schema:
   output_dir: str
-  streams:
-    - str
   min_file_size_mb: float
-  logging: bool
   continuous_recording: bool
   musicbrainz_tagging: bool
   purge_duplicates: bool
+  nas_mount_check: bool
+  nas_status_entity: str
+  logging: bool
+  streams:
+    - str

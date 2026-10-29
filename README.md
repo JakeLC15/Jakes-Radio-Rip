@@ -26,6 +26,9 @@ https://github.com/qbus00/streamripper.git
 
 - Ingress Web UI & Sidebar Integration: Monitor your live stream statuses, track tallies, disk usage, connection history, ads removed and recent tracks directly from your Home Assistant sidebar.
 
+- NAS storage protection. Configure a NAS status sensor to pause streamripper if NAS goes offline and automatically restart if reconnected.
+  Protects local storage from filling from home assistant silently defaulting to local storage when NAS is offline.
+
 - One-Click Library Maintenance: Includes a built-in button to instantly purge numbered duplicate tracks Track - Artist(2).mp3, etc.) on the fly.
 - Or it can remove duplicates automatically.
   

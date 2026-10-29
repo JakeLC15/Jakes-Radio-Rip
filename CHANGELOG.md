@@ -1,5 +1,7 @@
 # Changelog
 
+## 2026.10.29-1
+- **Added:** Nas storage protection. If configured, Stops streamripper if NAS disconnects and won't start until NAS is online.
 ## 2026.10.26-2
 - **Added:** ID3 Tag editor filters and check box showing tagged songs.
 ## 2026.10.26-1
