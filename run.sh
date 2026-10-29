@@ -2,7 +2,7 @@
 
 echo "========================================"
 echo "JAKE'S STATION RIPPER STARTING"
-echo "BUILD TEST: 2026-10-29-1"
+echo "BUILD TEST: 2026-10-29-2"
 echo "========================================"
 
 set -uo pipefail
@@ -1076,10 +1076,29 @@ class IngressHandler(BaseHTTPRequestHandler):
         except:
             return 0
 
+    def _send_nas_status(self):
+        online = nas_is_online()
+    
+        response = json.dumps({"online": online}).encode("utf-8")
+    
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(response)))
+        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+        self.end_headers()
+        self.wfile.write(response)
+    
     def _render_page(self):
         files, today_count = self._get_files()
-        nas_notice = ("<div class=\"card\" style=\"border:1px solid #f90;color:#ffcc80\"><strong>NAS OFFLINE</strong><br>Recording and library file operations are paused. The interface will remain available and recording will resume when the NAS sensor returns to ON.</div>" if not nas_is_online() else "")
-
+        nas_notice = """
+        <div id="nas-warning" class="card"
+             style="border:1px solid #f90;color:#ffcc80;display:none;">
+            <strong>NAS OFFLINE</strong><br>
+            Recording and library file operations are paused.
+            The interface will remain available and recording will resume
+            when the NAS sensor returns to ON.
+        </div>
+        """
         current_count = len(files)
         ads_removed = self._get_ads_removed()
         duplicates_removed = self._get_duplicates_removed()
@@ -1590,6 +1609,33 @@ class IngressHandler(BaseHTTPRequestHandler):
             }}
         }}, 10000);
     </script>
+
+    <script>
+    async function refreshNasStatus() {
+        try {
+            const response = await fetch("nas-status", {
+                cache: "no-store"
+            });
+    
+            if (!response.ok) {
+                throw new Error("NAS status request failed");
+            }
+    
+            const data = await response.json();
+            const warning = document.getElementById("nas-warning");
+    
+            if (warning) {
+                warning.style.display = data.online ? "none" : "block";
+            }
+        } catch (error) {
+            console.error("Unable to refresh NAS status:", error);
+        }
+    }
+    
+    refreshNasStatus();
+    setInterval(refreshNasStatus, 10000);
+    </script>
+    
 </body>
 </html>"""
 
@@ -1855,6 +1901,10 @@ class IngressHandler(BaseHTTPRequestHandler):
         params = parse_qs(parsed.query)
         api = params.get("api", [""])[0]
         try:
+            if self.path.split("?")[0].rstrip("/") == "/nas-status":
+                self._send_nas_status()
+                return
+                
             if api == "music_list":
                 require_nas_online()
                 relative = params.get("dir", [""])[0]
