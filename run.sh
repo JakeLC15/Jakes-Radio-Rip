@@ -2,7 +2,7 @@
 
 echo "========================================"
 echo "JAKE'S STATION RIPPER STARTING"
-echo "BUILD TEST: 2026-10-28-2"
+echo "BUILD TEST: 2026-10-29-1"
 echo "========================================"
 
 set -uo pipefail
@@ -26,6 +26,11 @@ PURGE_DUPLICATES="true"
 # Universal storage configuration defaults
 NAS_MOUNT_CHECK="false"
 NAS_STATUS_ENTITY=""
+NAS_STATE_FILE="/tmp/jakes_station_ripper_nas_state"
+NAS_MONITOR_PID=""
+STREAM_PID_DIR="/tmp/jakes_station_ripper_pids"
+mkdir -p "$STREAM_PID_DIR"
+echo "online" > "$NAS_STATE_FILE"
 
 STREAM_URLS=()
 
@@ -58,71 +63,75 @@ export ADS_REMOVED_LOCK
 export DUPLICATES_REMOVED_FILE
 export DUPLICATES_REMOVED_LOCK
 
-if [ ! -f "$ADS_REMOVED_FILE" ]; then
-    echo '{"count":0}' > "$ADS_REMOVED_FILE"
-fi
-
-if [ ! -f "$DUPLICATES_REMOVED_FILE" ]; then
-    echo '{"count":0}' > "$DUPLICATES_REMOVED_FILE"
-fi
-
-if [ "$NAS_MOUNT_CHECK" = "true" ] && [ "$NAS_STATUS_ENTITY" = "binary_sensor.nas_online" ]; then
-    echo "ERROR: Please change 'nas_status_entity' from the default placeholder to your real NAS sensor."
-fi
-
-if [ "$NAS_MOUNT_CHECK" = "true" ]; then
-    echo "Checking NAS status via entity: '$NAS_STATUS_ENTITY'..."
-
-    # Query the Home Assistant Supervisor API for the entity's state
-    RESPONSE=$(curl -s -X GET \
-        -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" \
+# NAS state is shared with the Python Ingress server. The HA entity is the source
+# of truth when checking is enabled; API failures fail closed (offline).
+export NAS_MOUNT_CHECK NAS_STATUS_ENTITY NAS_STATE_FILE
+nas_state_is_online() {
+    [ "$NAS_MOUNT_CHECK" != "true" ] || [ "$(cat "$NAS_STATE_FILE" 2>/dev/null)" = "online" ]
+}
+query_nas_state() {
+    local response state
+    response=$(curl -fsS --connect-timeout 2 --max-time 4 \
+        -H "Authorization: Bearer ${SUPERVISOR_TOKEN:-}" \
         -H "Content-Type: application/json" \
-        "http://supervisor/core/api/states/${NAS_STATUS_ENTITY}")
-
-    # Extract entity state
-    ENTITY_STATE=$(echo "$RESPONSE" | jq --raw-output '.state // empty')
-
-    echo "Current entity state is: '$ENTITY_STATE'"
-
-    # Keep the Ingress UI alive while waiting for the NAS
-    if [ -z "$ENTITY_STATE" ] || \
-       [ "$ENTITY_STATE" = "off" ] || \
-       [ "$ENTITY_STATE" = "unavailable" ] || \
-       [ "$ENTITY_STATE" = "unknown" ] || \
-       [ "$ENTITY_STATE" = "false" ]; then
-
-        echo "WARNING: NAS is offline ('$ENTITY_STATE'). Entering standby mode..."
-
-        # Loop until the NAS returns to a healthy state
-        while true; do
-            sleep 60
-
-            # Re-check NAS status
-            RESPONSE=$(curl -s -X GET \
-                -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" \
-                -H "Content-Type: application/json" \
-                "http://supervisor/core/api/states/${NAS_STATUS_ENTITY}")
-
-            ENTITY_STATE=$(echo "$RESPONSE" | jq --raw-output '.state // empty')
-
-            if [ "$ENTITY_STATE" = "on" ] || [ "$ENTITY_STATE" = "home" ]; then
-                echo "NAS has reconnected! Resuming ripper script..."
-                break
+        "http://supervisor/core/api/states/${NAS_STATUS_ENTITY}" 2>/dev/null) || { echo offline; return; }
+    state=$(printf '%s' "$response" | jq -r '.state // "unknown"' 2>/dev/null)
+    [ "$state" = "on" ] && { echo online; return; }
+    echo offline
+}
+monitor_nas() {
+    local previous current pidfile pid
+    previous="$(cat "$NAS_STATE_FILE" 2>/dev/null || echo offline)"
+    while true; do
+        if [ "$NAS_MOUNT_CHECK" = "true" ]; then
+            current=$(query_nas_state)
+        else
+            current=online
+        fi
+        if [ "$current" != "$previous" ]; then
+            echo "$current" > "$NAS_STATE_FILE"
+            if [ "$current" = "offline" ]; then
+                echo "⚠️ NAS sensor is not ON. Pausing recording and file operations."
+                # Kill only streamripper child processes registered by our wrappers.
+                for pidfile in "$STREAM_PID_DIR"/*.pid; do
+                    [ -f "$pidfile" ] || continue
+                    pid=$(cat "$pidfile" 2>/dev/null || true)
+                    case "$pid" in ''|*[!0-9]*) continue ;; esac
+                    kill -TERM "$pid" 2>/dev/null || true
+                done
+            else
+                echo "✅ NAS sensor is ON. Initializing storage and resuming recording."
+                mkdir -p "$BASE_OUTPUT_DIR" || true
+                [ -f "$ADS_REMOVED_FILE" ] || echo '{"count":0}' > "$ADS_REMOVED_FILE" 2>/dev/null || true
+                [ -f "$DUPLICATES_REMOVED_FILE" ] || echo '{"count":0}' > "$DUPLICATES_REMOVED_FILE" 2>/dev/null || true
+                find "$BASE_OUTPUT_DIR" -type f -path "*/incomplete/*" -delete 2>/dev/null || true
             fi
-
-            echo "NAS still offline (state: '$ENTITY_STATE'). Checking again in 60 seconds..."
-        done
-    fi
-
-    echo "NAS status verified as ONLINE. Proceeding..."
+            previous="$current"
+        fi
+        sleep 10
+    done
+}
+if [ "$NAS_MOUNT_CHECK" = "true" ]; then
+    echo offline > "$NAS_STATE_FILE"
+    echo "NAS monitoring enabled for entity: $NAS_STATUS_ENTITY"
+else
+    echo online > "$NAS_STATE_FILE"
 fi
+monitor_nas &
+NAS_MONITOR_PID=$!
 
-# Clean up incomplete
-echo "🧹 Cleaning old incomplete files..."
-find "$BASE_OUTPUT_DIR" -type f -path "*/incomplete/*" -delete 2>/dev/null
+# Never touch the configured output directory until the NAS sensor says ON.
+if nas_state_is_online; then
+    mkdir -p "$BASE_OUTPUT_DIR"
+    [ -f "$ADS_REMOVED_FILE" ] || echo '{"count":0}' > "$ADS_REMOVED_FILE"
+    [ -f "$DUPLICATES_REMOVED_FILE" ] || echo '{"count":0}' > "$DUPLICATES_REMOVED_FILE"
+    echo "🧹 Cleaning old incomplete files..."
+    find "$BASE_OUTPUT_DIR" -type f -path "*/incomplete/*" -delete 2>/dev/null || true
+fi
 
 # Status function
 update_status() {
+    nas_state_is_online || return 0
     local station="$1"
     local status="$2"
     local reconnects="${3:-0}"
@@ -199,8 +208,9 @@ increment_duplicates_removed() {
 # File monitor
 watch_all_completed_files() {
     echo "👀 MP3 monitoring and cleanup started: $BASE_OUTPUT_DIR"
-
-    inotifywait \
+    while true; do
+      while ! nas_state_is_online; do sleep 5; done
+      inotifywait \
         --monitor \
         --quiet \
         --recursive \
@@ -209,6 +219,7 @@ watch_all_completed_files() {
         --format '%w%f' \
         "$BASE_OUTPUT_DIR" |
     while IFS= read -r REAL_PATH; do
+        nas_state_is_online || continue
 
         case "$REAL_PATH" in
             *.mp3|*.MP3) ;;
@@ -238,6 +249,7 @@ watch_all_completed_files() {
             sleep 2
 
             # FIX: Fast safety exit. If another concurrent process or loop step deleted this file, stop now!
+            nas_state_is_online || exit 0
             [ -f "$REAL_PATH" ] || exit 0
             
             FILE_SIZE=$(stat -c%s "$REAL_PATH" 2>/dev/null) || exit 0
@@ -249,7 +261,7 @@ watch_all_completed_files() {
                 sleep 3
                 [ -f "$REAL_PATH" ] || exit 0
                 CURRENT_SIZE=$(stat -c%s "$REAL_PATH" 2>/dev/null) || exit 0
-                if [ "$CURRENT_SIZE" -eq "$FILE_SIZE" ] ; then
+                if nas_state_is_online && [ "$CURRENT_SIZE" -eq "$FILE_SIZE" ] ; then
                     STREAM_SOURCE=$(basename "$(dirname "$REAL_PATH")")
                     echo "🧹 [$STREAM_SOURCE] Removing small advertisement MP3: $REAL_PATH"
                     if rm -f -- "$REAL_PATH"; then
@@ -262,13 +274,15 @@ watch_all_completed_files() {
             # 2. FILE IS VALID -> EXECUTE MUSICBRAINZ AUTO-TAGGING NATIVELY
             if [ "${MUSICBRAINZ_TAGGING}" = "true" ]; then
                 # Double-check file existence one last time before hitting the python interpreter engine
-                if [ -f "$REAL_PATH" ]; then
+                if nas_state_is_online && [ -f "$REAL_PATH" ]; then
                     echo "🎵 [Watcher] Passing completed track to tagger: $RAW_TITLE"
                     python3 /tagger.py "$REAL_PATH" "$RAW_TITLE"
                 fi
             fi
         ) &
 
+      done
+      sleep 2
     done
 }
 
@@ -297,8 +311,12 @@ for URL in "${STREAM_URLS[@]}"; do
         RECONNECTS=0
     
         for ((attempt=1; attempt<=MAX_RETRIES; attempt++)); do
+            # Wait without touching the output path while the NAS is unavailable.
+            while ! nas_state_is_online; do
+                sleep 5
+            done
             echo "Starting Streamripper for $FOLDER_NAME..."
-            mkdir -p "$STREAM_DIR"
+            mkdir -p "$STREAM_DIR" || { sleep 5; continue; }
             update_status "$FOLDER_NAME" "Ripping" "$RECONNECTS" ""
 
             if [ "${CONTINUOUS_RECORDING}" = "true" ]; then
@@ -329,9 +347,18 @@ for URL in "${STREAM_URLS[@]}"; do
 
            CLEANUP_PID=""
             
-            streamripper "${RIPPER_ARGS[@]}"
-            
+            streamripper "${RIPPER_ARGS[@]}" &
+            STREAM_PID=$!
+            PID_FILE="$STREAM_PID_DIR/${BASHPID}.pid"
+            echo "$STREAM_PID" > "$PID_FILE"
+            wait "$STREAM_PID"
             RC=$?
+            rm -f "$PID_FILE"
+            if ! nas_state_is_online; then
+                echo "NAS went offline during recording for $FOLDER_NAME; waiting to resume."
+                attempt=$((attempt - 1))
+                continue
+            fi
             
             # Stop the file watcher after Streamripper exits
             if [ -n "$CLEANUP_PID" ]; then
@@ -389,6 +416,9 @@ def is_youtube_url(url):
 
 def run_youtube_download(url, playlist):
     global DOWNLOAD_PROCESS
+    if not nas_is_online():
+        update_download_state("Paused", "NAS is offline. Reconnect the NAS before downloading.")
+        return
     if not DOWNLOAD_LOCK.acquire(blocking=False):
         update_download_state("Busy", "A YouTube download is already running. Please wait.")
         return
@@ -420,6 +450,9 @@ def run_youtube_download(url, playlist):
         else:
             download_dir = YOUTUBE_DIR
 
+        if not nas_is_online():
+            update_download_state("Paused", "NAS went offline before the download could start.")
+            return
         os.makedirs(download_dir, exist_ok=True)
         update_download_state(
             "Running",
@@ -445,6 +478,16 @@ def run_youtube_download(url, playlist):
             DOWNLOAD_PROCESS = proc
             tail = []
             for line in proc.stdout:
+                if not nas_is_online():
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                        proc.wait()
+                    update_download_state("Paused", "NAS went offline; the download was stopped.")
+                    DOWNLOAD_PROCESS = None
+                    return
                 log.write(line)
                 log.flush()
                 stripped = line.strip()
@@ -466,6 +509,21 @@ def run_youtube_download(url, playlist):
         DOWNLOAD_LOCK.release()
 
 BASE_OUTPUT_DIR = os.environ.get("BASE_OUTPUT_DIR", "/media/stationripper")
+NAS_MOUNT_CHECK = os.environ.get("NAS_MOUNT_CHECK", "false").lower() == "true"
+NAS_STATE_FILE = os.environ.get("NAS_STATE_FILE", "/tmp/jakes_station_ripper_nas_state")
+def nas_is_online():
+    if not NAS_MOUNT_CHECK:
+        return True
+    try:
+        with open(NAS_STATE_FILE, "r", encoding="utf-8") as state_file:
+            return state_file.read().strip() == "online"
+    except OSError:
+        return False
+
+def require_nas_online():
+    if not nas_is_online():
+        raise RuntimeError("NAS is offline. File operations are paused until the NAS sensor returns to ON.")
+
 STATUS_FILE = os.environ.get("STATUS_FILE", f"{BASE_OUTPUT_DIR}/status.json")
 START_TIME = int(os.environ.get("START_TIME", time.time()))
 ADS_REMOVED_FILE = os.environ.get(
@@ -952,6 +1010,8 @@ startFolderRefresh();
 
 class IngressHandler(BaseHTTPRequestHandler):
     def _get_files(self):
+        if not nas_is_online():
+            return [], 0
         files = []
         today = datetime.now().date()
         today_count = 0
@@ -997,6 +1057,8 @@ class IngressHandler(BaseHTTPRequestHandler):
         return f"{minutes}m {seconds}s"
 
     def _get_ads_removed(self):
+        if not nas_is_online():
+            return 0
         try:
             with open(ADS_REMOVED_FILE, "r") as f:
                 data = json.load(f)
@@ -1005,6 +1067,8 @@ class IngressHandler(BaseHTTPRequestHandler):
             return 0
             
     def _get_duplicates_removed(self):
+        if not nas_is_online():
+            return 0
         try:
             with open(DUPLICATES_REMOVED_FILE, "r") as f:
                 data = json.load(f)
@@ -1014,12 +1078,15 @@ class IngressHandler(BaseHTTPRequestHandler):
 
     def _render_page(self):
         files, today_count = self._get_files()
+        nas_notice = ("<div class=\"card\" style=\"border:1px solid #f90;color:#ffcc80\"><strong>NAS OFFLINE</strong><br>Recording and library file operations are paused. The interface will remain available and recording will resume when the NAS sensor returns to ON.</div>" if not nas_is_online() else "")
 
         current_count = len(files)
         ads_removed = self._get_ads_removed()
         duplicates_removed = self._get_duplicates_removed()
 
         try:
+            if not nas_is_online():
+                raise OSError("NAS offline")
             usage = shutil.disk_usage(BASE_OUTPUT_DIR)
             disk_used = self._format_size(usage.used)
             disk_free = self._format_size(usage.free)
@@ -1032,7 +1099,7 @@ class IngressHandler(BaseHTTPRequestHandler):
         station_rows = ""
         reconnect_rows = ""
 
-        if os.path.exists(STATUS_FILE):
+        if nas_is_online() and os.path.exists(STATUS_FILE):
             try:
                 with open(STATUS_FILE, 'r') as f:
                     data = json.load(f)
@@ -1221,7 +1288,7 @@ class IngressHandler(BaseHTTPRequestHandler):
     </style>
 </head>
 <body>
-
+    {nas_notice}
     <div class="card">
         <h2>📻 Live Stream Status</h2>
         <ul id="station-list">{station_rows}</ul>
@@ -1535,6 +1602,7 @@ class IngressHandler(BaseHTTPRequestHandler):
 
             if action == "edit_music_tags":
                 try:
+                    require_nas_online()
                     relative = form.get("path", [""])[0]
                     new_name = form.get("new_name", [""])[0].strip()
                     reset_mb = form.get("reset_musicbrainz", ["no"])[0] == "yes"
@@ -1593,6 +1661,7 @@ class IngressHandler(BaseHTTPRequestHandler):
                 return
 
             if action == "youtube_download":
+                require_nas_online()
                 url = form.get("url", [""])[0].strip()
                 playlist = form.get("playlist", [""])[0] == "yes"
                 if not is_youtube_url(url):
@@ -1735,6 +1804,7 @@ class IngressHandler(BaseHTTPRequestHandler):
                 return
 
             elif action == "purge_duplicates":
+                require_nas_online()
                 subprocess.run(
                     [
                         "bash", "-c",
@@ -1786,6 +1856,7 @@ class IngressHandler(BaseHTTPRequestHandler):
         api = params.get("api", [""])[0]
         try:
             if api == "music_list":
+                require_nas_online()
                 relative = params.get("dir", [""])[0]
                 folder = music_path(relative)
                 if not os.path.isdir(folder):
@@ -1845,6 +1916,7 @@ class IngressHandler(BaseHTTPRequestHandler):
                 self.wfile.write(payload)
                 return
             elif api == "music_info":
+                require_nas_online()
                 path = music_path(params.get("path", [""])[0])
                 if not os.path.isfile(path) or not path.lower().endswith(".mp3"):
                     raise ValueError("Select an existing MP3 file.")
@@ -1884,7 +1956,7 @@ if __name__ == '__main__':
 EOF
 
 # Export environment paths to python sub-process scope
-export BASE_OUTPUT_DIR STATUS_FILE START_TIME ADS_REMOVED_FILE DUPLICATES_REMOVED_FILE MIN_FILE_SIZE_MB MUSICBRAINZ_TAGGING PURGE_DUPLICATES
+export BASE_OUTPUT_DIR STATUS_FILE START_TIME ADS_REMOVED_FILE DUPLICATES_REMOVED_FILE MIN_FILE_SIZE_MB MUSICBRAINZ_TAGGING PURGE_DUPLICATES NAS_MOUNT_CHECK NAS_STATUS_ENTITY NAS_STATE_FILE
 
 # Shutdown function
 shutdown_handler() {
@@ -1892,6 +1964,9 @@ shutdown_handler() {
 
     if [ -n "${GLOBAL_WATCHER_PID:-}" ]; then
         kill "$GLOBAL_WATCHER_PID" 2>/dev/null || true
+    fi
+    if [ -n "${NAS_MONITOR_PID:-}" ]; then
+        kill "$NAS_MONITOR_PID" 2>/dev/null || true
     fi
 
     # Stop Python server
