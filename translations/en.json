@@ -6,7 +6,7 @@
     },
     "nas_status_entity": {
       "name": "Home Assistant NAS Status Entity",
-      "description": "Enter the entity ID of a Home Assistant helper switch, ping sensor, or binary sensor tracking your NAS status (e.g., 'input_boolean.nas_online'). If this entity is off, false, or disconnected, the ripper will abort."
+      "description": "Enter the entity ID of a Home Assistant helper switch, ping sensor, or binary sensor tracking your NAS status (e.g., 'input_boolean.nas_online'). If this entity is off, false, or disconnected, the ripper will pause. This sensors on, true or connected status means the drive is online and ready to be written to."
     },
     "min_file_size_mb": {
       "name": "Minimum File Size Threshold (MB)",
