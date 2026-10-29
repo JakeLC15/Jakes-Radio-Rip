@@ -1611,31 +1611,25 @@ class IngressHandler(BaseHTTPRequestHandler):
     </script>
 
     <script>
-    async function refreshNasStatus() {
-        try {
-            const response = await fetch("nas-status", {
-                cache: "no-store"
-            });
-    
-            if (!response.ok) {
-                throw new Error("NAS status request failed");
-            }
+    async function refreshNasStatus() {{
+        try {{
+            const response = await fetch("nas-status", {{ cache: "no-store" }});
+            if (!response.ok) throw new Error("NAS status request failed");
     
             const data = await response.json();
             const warning = document.getElementById("nas-warning");
     
-            if (warning) {
+            if (warning) {{
                 warning.style.display = data.online ? "none" : "block";
-            }
-        } catch (error) {
+            }}
+        }} catch (error) {{
             console.error("Unable to refresh NAS status:", error);
-        }
-    }
+        }}
+    }}
     
     refreshNasStatus();
     setInterval(refreshNasStatus, 10000);
     </script>
-    
 </body>
 </html>"""
 
