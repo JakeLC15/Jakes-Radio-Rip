@@ -2,7 +2,7 @@
 
 echo "========================================"
 echo "JAKE'S STATION RIPPER STARTING"
-echo "BUILD TEST: 2026-10-29-3"
+echo "BUILD TEST: 2026-10-31-1"
 echo "========================================"
 
 set -uo pipefail
@@ -1048,7 +1048,6 @@ async function saveFile(reset=false){
  finally{buttons.forEach(b=>b.disabled=false);}
 }
 loadFolder('',0);
-startFolderRefresh();
 </script></body></html>"""
 
 class IngressHandler(BaseHTTPRequestHandler):
@@ -1904,8 +1903,10 @@ class IngressHandler(BaseHTTPRequestHandler):
                 folder = music_path(relative)
                 if not os.path.isdir(folder):
                     raise ValueError("Folder does not exist.")
-                dirs, files = [], []
-                # List only the current directory; no recursive library scan.
+                dirs, mp3_names = [], []
+                # First collect lightweight directory entries only. Do not open
+                # every MP3 while scanning a large folder; tag inspection is
+                # limited to the visible page below.
                 with os.scandir(folder) as entries:
                     for entry in entries:
                         name = entry.name
@@ -1915,34 +1916,41 @@ class IngressHandler(BaseHTTPRequestHandler):
                             if entry.is_dir(follow_symlinks=False):
                                 dirs.append(name)
                             elif entry.is_file(follow_symlinks=False) and name.lower().endswith(".mp3"):
-                                # Check for MusicBrainz tags in the current MP3 file
-                                has_mb = False
-                                try:
-                                    audio = ID3(entry.path)
-                                    for key in audio.keys():
-                                        frame = audio[key]
-                                        desc = str(getattr(frame, "desc", "")).lower()
-                                        owner = str(getattr(frame, "owner", "")).lower()
-                                        if (key.startswith("TXXX:") and desc.startswith("musicbrainz")) or (
-                                            key.startswith("UFID:") and "musicbrainz" in owner
-                                        ):
-                                            has_mb = True
-                                            break
-                                except ID3NoHeaderError:
-                                    pass
-
-                                files.append({
-                                    "name": name, 
-                                    "path": music_relative(entry.path),
-                                    "has_musicbrainz": has_mb
-                                })
+                                mp3_names.append(name)
                         except OSError:
                             continue
+
                 dirs.sort(key=str.lower)
-                files.sort(key=lambda item: item["name"].lower())
-                page_size = 50
+                mp3_names.sort(key=str.lower)
+                page_size = 25
                 page = max(0, int(params.get("page", ["0"])[0]))
-                total = len(files)
+                total = len(mp3_names)
+                page_names = mp3_names[page * page_size:(page + 1) * page_size]
+                files = []
+
+                # Read MusicBrainz markers only for the 25 visible songs.
+                for name in page_names:
+                    file_path = os.path.join(folder, name)
+                    has_mb = False
+                    try:
+                        audio = ID3(file_path)
+                        for key in audio.keys():
+                            frame = audio[key]
+                            desc = str(getattr(frame, "desc", "")).lower()
+                            owner = str(getattr(frame, "owner", "")).lower()
+                            if (key.startswith("TXXX:") and desc.startswith("musicbrainz")) or (
+                                key.startswith("UFID:") and "musicbrainz" in owner
+                            ):
+                                has_mb = True
+                                break
+                    except (ID3NoHeaderError, OSError):
+                        pass
+
+                    files.append({
+                        "name": name,
+                        "path": music_relative(file_path),
+                        "has_musicbrainz": has_mb
+                    })
                 result = {
                     "dir": music_relative(folder) if folder != os.path.realpath(BASE_OUTPUT_DIR) else "",
                     "parent": music_relative(os.path.dirname(folder)) if folder != os.path.realpath(BASE_OUTPUT_DIR) else "",
