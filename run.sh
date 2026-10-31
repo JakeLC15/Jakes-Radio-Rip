@@ -2,7 +2,7 @@
 
 echo "========================================"
 echo "JAKE'S STATION RIPPER STARTING"
-echo "BUILD TEST: 2026-10-31-1"
+echo "BUILD TEST: 2026-10-31-2"
 echo "========================================"
 
 set -uo pipefail
@@ -1955,7 +1955,7 @@ class IngressHandler(BaseHTTPRequestHandler):
                     "dir": music_relative(folder) if folder != os.path.realpath(BASE_OUTPUT_DIR) else "",
                     "parent": music_relative(os.path.dirname(folder)) if folder != os.path.realpath(BASE_OUTPUT_DIR) else "",
                     "dirs": dirs,
-                    "files": files[page * page_size:(page + 1) * page_size],
+                    "files": files,  # Already limited to the requested page above.
                     "total": total,
                     "page_size": page_size
                 }
