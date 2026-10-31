@@ -2,7 +2,7 @@
 
 echo "========================================"
 echo "JAKE'S STATION RIPPER STARTING"
-echo "BUILD TEST: 2026-10-31-2"
+echo "BUILD TEST: 2026-10-31-3"
 echo "========================================"
 
 set -uo pipefail
@@ -831,7 +831,7 @@ table{width:100%;border-collapse:collapse}td{padding:8px 4px;border-bottom:1px s
   <div id="pager" class="row" style="margin:0"></div>
   <div>
     <label for="filterSelect" class="muted" style="margin-right:6px;font-size:14px">Filter:</label>
-    <select id="filterSelect" onchange="applyFilter(this.value)">
+    <select id="filterSelect" onchange="changeFilter(this.value)">
       <option value="both">Show All</option>
       <option value="tagged">Tagged Only (✅)</option>
       <option value="untagged">Untagged Only</option>
@@ -855,7 +855,7 @@ async function loadFolder(dir='',p=0){
  document.getElementById('editor').hidden=true;
  stopTagRefresh();
  try{
-  const d=await getJSON({api:'music_list',dir:currentDir,page:String(page)});
+  const d=await getJSON({api:'music_list',dir:currentDir,page:String(page),filter:currentFilter});
   const crumbs=document.getElementById('crumbs');crumbs.replaceChildren();
   const up=el('button','⬆ Parent folder');up.onclick=()=>loadFolder(d.parent||'',0);document.getElementById('folders').append(up);
   crumbs.append(el('p','Folder: /'+(currentDir||''),'muted'));
@@ -896,7 +896,8 @@ function startFolderRefresh() {
    const d = await getJSON({
     api: 'music_list',
     dir: currentDir,
-    page: String(page)
+    page: String(page),
+    filter: currentFilter
    });
 
    // Refresh the current page's checkmarks without rebuilding
@@ -936,6 +937,11 @@ function stopFolderRefresh() {
   clearInterval(folderRefreshTimer);
   folderRefreshTimer = null;
  }
+}
+
+function changeFilter(value) {
+ currentFilter = value;
+ loadFolder(currentDir, 0);
 }
 
 function applyFilter(value) {
@@ -1924,14 +1930,11 @@ class IngressHandler(BaseHTTPRequestHandler):
                 mp3_names.sort(key=str.lower)
                 page_size = 25
                 page = max(0, int(params.get("page", ["0"])[0]))
-                total = len(mp3_names)
-                page_names = mp3_names[page * page_size:(page + 1) * page_size]
-                files = []
+                filter_mode = params.get("filter", ["both"])[0]
+                if filter_mode not in ("both", "tagged", "untagged"):
+                    filter_mode = "both"
 
-                # Read MusicBrainz markers only for the 25 visible songs.
-                for name in page_names:
-                    file_path = os.path.join(folder, name)
-                    has_mb = False
+                def has_musicbrainz_tags(file_path):
                     try:
                         audio = ID3(file_path)
                         for key in audio.keys():
@@ -1941,11 +1944,30 @@ class IngressHandler(BaseHTTPRequestHandler):
                             if (key.startswith("TXXX:") and desc.startswith("musicbrainz")) or (
                                 key.startswith("UFID:") and "musicbrainz" in owner
                             ):
-                                has_mb = True
-                                break
+                                return True
                     except (ID3NoHeaderError, OSError):
                         pass
+                    return False
 
+                # For filtered views, inspect every file so filtering applies to
+                # the whole folder before pagination. Show All stays lightweight
+                # and only inspects the 25 files on the requested page.
+                if filter_mode == "both":
+                    total = len(mp3_names)
+                    page_names = mp3_names[page * page_size:(page + 1) * page_size]
+                else:
+                    matching_names = []
+                    for name in mp3_names:
+                        tagged = has_musicbrainz_tags(os.path.join(folder, name))
+                        if (filter_mode == "tagged" and tagged) or (filter_mode == "untagged" and not tagged):
+                            matching_names.append(name)
+                    total = len(matching_names)
+                    page_names = matching_names[page * page_size:(page + 1) * page_size]
+
+                files = []
+                for name in page_names:
+                    file_path = os.path.join(folder, name)
+                    has_mb = has_musicbrainz_tags(file_path)
                     files.append({
                         "name": name,
                         "path": music_relative(file_path),
@@ -1955,7 +1977,7 @@ class IngressHandler(BaseHTTPRequestHandler):
                     "dir": music_relative(folder) if folder != os.path.realpath(BASE_OUTPUT_DIR) else "",
                     "parent": music_relative(os.path.dirname(folder)) if folder != os.path.realpath(BASE_OUTPUT_DIR) else "",
                     "dirs": dirs,
-                    "files": files,  # Already limited to the requested page above.
+                    "files": files,
                     "total": total,
                     "page_size": page_size
                 }
