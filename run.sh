@@ -1165,7 +1165,6 @@ class IngressHandler(BaseHTTPRequestHandler):
             disk_percent = 0
 
         station_rows = ""
-        reconnect_rows = ""
 
         # Only URLs in the active add-on options are live. Bookmarks are kept
         # separately and must never appear in status or connection monitoring.
@@ -1201,21 +1200,18 @@ class IngressHandler(BaseHTTPRequestHandler):
                         last_error = ""
 
                     indicator = "🟢" if state == "Ripping" else "🟠"
+                    reconnect_text = f"{reconnects} reconnects"
+                    if last_error:
+                        reconnect_text += f" · {last_error}"
+
                     station_rows += f"""
                     <li>
-                        <span>{indicator} <strong>{html.escape(station)}</strong></span>
-                        <span>{html.escape(str(state))}</span>
-                    </li>
-                    """
-                    reconnect_text = f"{state} · {reconnects} reconnects"
-                    if last_error:
-                        reconnect_text += f" — {last_error}"
-
-                    reconnect_rows += f"""
-                    <li>
-                        <div style="display: flex; flex-direction: column; width: 100%;">
-                            <span style="font-weight: bold; color: #fff;">{html.escape(station)}</span>
-                            <small style="color: #999; margin-top: 3px;">{html.escape(reconnect_text)}</small>
+                        <div style="display:flex; flex-direction:column; width:100%; gap:4px;">
+                            <div style="display:flex; justify-content:space-between; align-items:center; gap:12px;">
+                                <span>{indicator} <strong>{html.escape(station)}</strong></span>
+                                <span>{html.escape(str(state))}</span>
+                            </div>
+                            <small>{html.escape(reconnect_text)}</small>
                         </div>
                     </li>
                     """
@@ -1296,9 +1292,6 @@ class IngressHandler(BaseHTTPRequestHandler):
             
         if not station_rows:
             station_rows = "<li>No active streams found</li>"
-
-        if not reconnect_rows:
-            reconnect_rows = "<li>No active stream connections to monitor</li>"
 
         current_song = "No tracks yet"
 
@@ -1431,11 +1424,6 @@ class IngressHandler(BaseHTTPRequestHandler):
         <h2>🏷️ Music Tag Editor</h2>
         <p style="color:#aaa;">Browse music folders, inspect ID3 tags, rename MP3 files, and clear MusicBrainz IDs for retagging.</p>
         <button class="btn-refresh" onclick="window.location.href=window.location.pathname+'?page=tags';">Open Music Tag Editor</button>
-    </div>
-
-    <div class="card">
-        <h2>🔄 Connection History</h2>
-        <ul id="reconnect-list">{reconnect_rows}</ul>
     </div>
 
     <div class="card">
@@ -1649,7 +1637,7 @@ class IngressHandler(BaseHTTPRequestHandler):
                     'station-list', 'current-song', 'stat-total', 'stat-today', 
                     'stat-used', 'stat-free', 'stat-total-disk', 'stat-percent',
                     'stat-ads-removed',
-                    'stat-uptime', 'reconnect-list', 'recent-list', 'youtube-status', 'youtube-message'
+                    'stat-uptime', 'recent-list', 'youtube-status', 'youtube-message'
                 ];
 
                 // Swap out the full contents exactly as they appear on the server
