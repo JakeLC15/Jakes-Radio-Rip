@@ -1132,16 +1132,16 @@ async function loadMusicBrainzSuggestions(path){
   box.append(el('p',`${d.suggestions.length} suggestion(s)${d.cached?' · cached':''}. Search: ${d.query}`,'muted'));
   if(!d.suggestions.length){box.append(el('p','No MusicBrainz matches found.'));return;}
   d.suggestions.forEach((item,i)=>{
-   const row=document.createElement('div');row.className='tagrow';
+   // Make the entire suggestion a single, obvious tap target (important on mobile).
+   const row=document.createElement('button');
+   row.type='button';
+   row.className='mb-suggestion';
+   row.style.cssText='display:block;width:100%;text-align:left;margin:8px 0;padding:12px;background:#263238;border:1px solid #03a9f4;border-radius:6px;white-space:normal;';
    row.append(el('div',`${i+1}. ${item.artist} — ${item.title}`,'tagkey'));
    row.append(el('div',[item.album,item.date,item.score?`Match ${item.score}%`: ''].filter(Boolean).join(' · ')||'No release details','tagvalue'));
    if(item.id)row.append(el('div',`Recording MBID: ${item.id}`,'muted'));
-   const apply=document.createElement('button');
-   apply.type='button';
-   apply.textContent='Use this match & fill tags';
-   apply.style.marginTop='8px';
-   apply.onclick=()=>applyMusicBrainzSuggestion(path,item,apply);
-   row.append(apply);
+   row.append(el('div','▶ Tap to use this match and fill the tags','muted'));
+   row.onclick=()=>applyMusicBrainzSuggestion(path,item,row);
    box.append(row);
   });
  }catch(e){if(selected===path){box.replaceChildren();box.append(el('p','MusicBrainz suggestions unavailable: '+e.message,'muted'));}}
@@ -1168,6 +1168,7 @@ async function applyMusicBrainzSuggestion(path,item,button){
   notice(result.message);
   await refreshCurrentTags();
  }catch(e){
+  console.error('Could not apply MusicBrainz suggestion:',e);
   notice('Could not apply MusicBrainz suggestion: '+e.message);
  }finally{
   button.disabled=false;
@@ -2390,7 +2391,5 @@ python3 /tmp/server.py &
 PYTHON_PID=$!
 
 # Wait for Python server
-
-
 
 wait "$PYTHON_PID"
