@@ -78,7 +78,7 @@ def clean_and_tag_file(file_path, raw_title):
                 
             # STRING NORMALIZATION HELPERS FOR VALIDATION
             def normalize_str(s):
-                removals = ["'", "’", '"', "“", "”", "-", ".", ",", "!", "?", "(", ")", "[", "]"]
+                removals = ["'", "’", '"', "“", "”", "-", "/", ".", ",", "!", "?", "(", ")", "[", "]"]
                 out = s.lower().strip()
                 for char in removals:
                     out = out.replace(char, "")
