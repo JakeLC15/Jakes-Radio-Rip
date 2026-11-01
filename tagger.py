@@ -54,7 +54,7 @@ def clean_and_tag_file(file_path, raw_title):
     search_title = title.strip()
 
     try:
-        print(f"Querying MusicBrainz for: {search_artist} - {search_title}")
+        print(f"🔍 Querying MusicBrainz for: {search_artist} - {search_title}")
 
         result = musicbrainz_request(
             musicbrainzngs.search_recordings,
@@ -169,9 +169,9 @@ def clean_and_tag_file(file_path, raw_title):
                 audio['TXXX:MusicBrainz Release Group Id'] = TXXX(encoding=3, desc='MusicBrainz Release Group Id', text=rg_id)
 
             audio.save(file_path)
-            print(f"Successfully tagged: {clean_artist} - {clean_title} [Album: {album_name}] [Track #: {track_num}] [Year: {release_date[:4]}] [Genre: {genre_name}]")
+            print(f"✅ Successfully tagged: {clean_artist} - {clean_title} [Album: {album_name}] [Track #: {track_num}] [Year: {release_date[:4]}] [Genre: {genre_name}]")
         else:
-            print(f"No match found for: {raw_title}")
+            print(f"🔍🚫 No match found for: {raw_title}")
                 
     except Exception as e:
         print(f"Metadata processing failure: {e}")
