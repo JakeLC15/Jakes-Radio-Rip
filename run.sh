@@ -2,7 +2,7 @@
 
 echo "========================================"
 echo "JAKE'S STATION RIPPER STARTING"
-echo "BUILD TEST: 2026-11-01-2"
+echo "BUILD TEST: 2026-11-01-3"
 echo "========================================"
 
 set -uo pipefail
@@ -884,7 +884,8 @@ def get_musicbrainz_suggestions(path):
         cached = cache.get(cache_key)
         if cached and time.time() - cached.get("time", 0) < MB_CACHE_TTL:
             return {"cached": True, "query": query, "suggestions": cached.get("suggestions", [])}
-
+            
+    print(f"🔍 [Suggestions] Querying MusicBrainz")
     params = urlencode({"query": query, "fmt": "json", "limit": 5})
     request = urllib.request.Request(
         "https://musicbrainz.org/ws/2/recording/?" + params,
