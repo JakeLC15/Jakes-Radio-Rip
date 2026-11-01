@@ -2,7 +2,7 @@
 
 echo "========================================"
 echo "JAKE'S STATION RIPPER STARTING"
-echo "BUILD TEST: 2026-11-01-1"
+echo "BUILD TEST: 2026-11-01-2"
 echo "========================================"
 
 set -uo pipefail
@@ -457,7 +457,7 @@ import threading
 import urllib.request
 import urllib.error
 
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlparse, urlencode
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
@@ -774,7 +774,6 @@ def restart_addon():
 class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
     daemon_threads = True
 
-
 def music_path(relative=""):
     """Resolve a user-selected path safely within the configured music directory."""
     base = os.path.realpath(BASE_OUTPUT_DIR)
@@ -826,6 +825,132 @@ def read_music_tags(path):
     mbids.sort(key=lambda item: item["key"].lower())
     return {"tags": tags, "musicbrainz": mbids, "has_id3": True}
 
+# MusicBrainz suggestion lookups are deliberately on-demand and cached.
+# The API limit is one request/second per source IP; we space this UI's
+# requests by at least 2 seconds and never search from the 5-second tag refresh.
+MB_CACHE_FILE = os.path.join(BASE_OUTPUT_DIR, ".musicbrainz_suggestions_cache.json")
+MB_CACHE_LOCK = Lock()
+MB_REQUEST_LOCK_FILE = "/tmp/musicbrainz_api.lock"
+MB_CACHE_TTL = 30 * 24 * 60 * 60
+MB_USER_AGENT = "JakesStationRipper/2026.11 (https://github.com/JakeLC15/Jakes-Radio-Rip)"
+
+def musicbrainz_query_for_file(path):
+    name = os.path.splitext(os.path.basename(path))[0]
+    # Common ripper naming convention: Artist - Track. Otherwise search title only.
+    parts = re.split(r"\s+-\s+", name, maxsplit=1)
+    if len(parts) == 2 and parts[0].strip() and parts[1].strip():
+        artist, title = parts[0].strip(), parts[1].strip()
+        query = f'recording:"{title}" AND artist:"{artist}"'
+    else:
+        artist, title = "", name.strip()
+        query = f'recording:"{title}"'
+    return artist, title, query
+
+def musicbrainz_request(function, *args, **kwargs):
+    with open(MB_REQUEST_LOCK_FILE, "a+") as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+
+        lock_file.seek(0)
+        try:
+            last_request = float(lock_file.read().strip() or "0")
+        except ValueError:
+            last_request = 0.0
+
+        elapsed = time.time() - last_request
+        if elapsed < 2.0:
+            time.sleep(2.0 - elapsed)
+
+        try:
+            return function(*args, **kwargs)
+        finally:
+            lock_file.seek(0)
+            lock_file.truncate()
+            lock_file.write(str(time.time()))
+            lock_file.flush()
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
+            
+def get_musicbrainz_suggestions(path):
+    global MB_LAST_REQUEST
+    st = os.stat(path)
+    artist, title, query = musicbrainz_query_for_file(path)
+    cache_key = f"{os.path.realpath(path)}|{st.st_size}|{st.st_mtime_ns}|{query}"
+    with MB_CACHE_LOCK:
+        try:
+            with open(MB_CACHE_FILE, "r", encoding="utf-8") as f:
+                cache = json.load(f)
+        except (OSError, ValueError):
+            cache = {}
+        cached = cache.get(cache_key)
+        if cached and time.time() - cached.get("time", 0) < MB_CACHE_TTL:
+            return {"cached": True, "query": query, "suggestions": cached.get("suggestions", [])}
+
+    params = urlencode({"query": query, "fmt": "json", "limit": 5})
+    request = urllib.request.Request(
+        "https://musicbrainz.org/ws/2/recording/?" + params,
+        headers={"User-Agent": MB_USER_AGENT, "Accept": "application/json"},
+    )
+    
+    with open(MB_REQUEST_LOCK_FILE, "a+") as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+
+        lock_file.seek(0)
+        try:
+            last_request = float(lock_file.read().strip() or "0")
+        except ValueError:
+            last_request = 0.0
+
+        wait = 2.0 - (time.time() - last_request)
+        if wait > 0:
+            time.sleep(wait)
+
+        try:
+            try:
+                with urllib.request.urlopen(request, timeout=12) as response:
+                    data = json.loads(response.read().decode("utf-8"))
+            except urllib.error.HTTPError as exc:
+                if exc.code == 503:
+                    raise RuntimeError("MusicBrainz is rate limiting requests. Please try again later.")
+                raise RuntimeError(f"MusicBrainz returned HTTP {exc.code}.")
+            except (urllib.error.URLError, TimeoutError) as exc:
+                raise RuntimeError(f"Could not reach MusicBrainz: {exc}")
+        finally:
+            lock_file.seek(0)
+            lock_file.truncate()
+            lock_file.write(str(time.time()))
+            lock_file.flush()
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
+            
+    suggestions = []
+    for item in data.get("recordings", []):
+        credits = item.get("""artist-credit""", [])
+        artist_name = "".join(str(c.get("name", c.get("artist", {}).get("name", ""))) for c in credits if isinstance(c, dict))
+        releases = item.get("releases", [])
+        release = releases[0] if releases else {}
+        suggestions.append({
+            "id": item.get("id", ""),
+            "title": item.get("title", ""),
+            "artist": artist_name or artist,
+            "album": release.get("title", ""),
+            "date": release.get("date", "")[:4],
+            "score": item.get("score", 0),
+            "length": item.get("length", 0),
+        })
+    with MB_CACHE_LOCK:
+        try:
+            with open(MB_CACHE_FILE, "r", encoding="utf-8") as f:
+                cache = json.load(f)
+        except (OSError, ValueError):
+            cache = {}
+        cache[cache_key] = {"time": time.time(), "suggestions": suggestions}
+        try:
+            tmp = MB_CACHE_FILE + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(cache, f)
+            os.replace(tmp, MB_CACHE_FILE)
+        except OSError:
+            pass
+    return {"cached": False, "query": query, "suggestions": suggestions}
+
 def music_editor_page():
     return """<!DOCTYPE html>
 <html style="background:#111;color:#eee"><head>
@@ -862,7 +987,7 @@ table{width:100%;border-collapse:collapse}td{padding:8px 4px;border-bottom:1px s
 <div id="editor" class="card" hidden><h2>Selected MP3</h2><div id="selectedPath" class="muted"></div>
 <label for="newname">Filename (including .mp3)</label><input id="newname" maxlength="240">
 <div class="row"><button id="save" onclick="saveFile()">Save Filename</button><button id="reset" onclick="saveFile(true)">Save &amp; Reset for Retagging</button></div>
-<h2 style="margin-top:22px">Current ID3 Tags</h2><div id="tags"></div><h2>MusicBrainz Identifiers</h2><div id="mbids"></div></div>
+<h2 style="margin-top:22px">Current ID3 Tags</h2><div id="tags"></div><h2>MusicBrainz Identifiers</h2><div id="mbids"></div><h2>MusicBrainz Suggestions</h2><div id="mbSuggestions" class="muted">Suggestions appear when an untagged track is opened.</div></div>
 <script>
 const basePath=window.location.pathname;
 let currentDir='', page=0, selected='', currentFilter='both';
@@ -990,8 +1115,28 @@ async function selectFile(path){
   d.info.tags.forEach(t=>{const row=el('div','');row.className='tagrow';row.append(el('div',t.label,'tagkey'),el('div',t.value||'(empty)','tagvalue'));tags.append(row);});
   if(!d.info.musicbrainz.length)mb.append(el('p','No MusicBrainz identifiers found.'));
   d.info.musicbrainz.forEach(t=>{const row=el('div','');row.className='tagrow';row.append(el('div',t.label,'tagkey'),el('div',t.value||'(empty)','tagvalue'));mb.append(row);});
+  const suggestions=document.getElementById('mbSuggestions');suggestions.replaceChildren();
+  if(!d.info.musicbrainz.length){suggestions.textContent='Searching MusicBrainz once for this untagged track…';loadMusicBrainzSuggestions(d.path);}
+  else{suggestions.textContent='Track already has MusicBrainz identifiers; suggestions are not needed.';}
   document.getElementById('editor').scrollIntoView({behavior:'smooth',block:'start'});
  }catch(e){notice('Could not read tags: '+e.message);}
+}
+async function loadMusicBrainzSuggestions(path){
+ const box=document.getElementById('mbSuggestions');
+ try{
+  const d=await getJSON({api:'musicbrainz_suggestions',path});
+  if(selected!==path)return;
+  box.replaceChildren();
+  box.append(el('p',`${d.suggestions.length} suggestion(s)${d.cached?' · cached':''}. Search: ${d.query}`,'muted'));
+  if(!d.suggestions.length){box.append(el('p','No MusicBrainz matches found.'));return;}
+  d.suggestions.forEach((item,i)=>{
+   const row=document.createElement('div');row.className='tagrow';
+   row.append(el('div',`${i+1}. ${item.artist} — ${item.title}`,'tagkey'));
+   row.append(el('div',[item.album,item.date,item.score?`Match ${item.score}%`: ''].filter(Boolean).join(' · ')||'No release details','tagvalue'));
+   if(item.id)row.append(el('div',`Recording MBID: ${item.id}`,'muted'));
+   box.append(row);
+  });
+ }catch(e){if(selected===path){box.replaceChildren();box.append(el('p','MusicBrainz suggestions unavailable: '+e.message,'muted'));}}
 }
 // Automatically refresh the displayed tags for the selected MP3.
 let tagRefreshTimer = null;
@@ -1996,6 +2141,23 @@ class IngressHandler(BaseHTTPRequestHandler):
                     "total": total,
                     "page_size": page_size
                 }
+                payload = json.dumps(result).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json; charset=UTF-8")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+                return
+            elif api == "musicbrainz_suggestions":
+                require_nas_online()
+                path = music_path(params.get("path", [""])[0])
+                if not os.path.isfile(path) or not path.lower().endswith(".mp3"):
+                    raise ValueError("Select an existing MP3 file.")
+                info = read_music_tags(path)
+                if info.get("musicbrainz"):
+                    result = {"cached": True, "query": "", "suggestions": []}
+                else:
+                    result = get_musicbrainz_suggestions(path)
                 payload = json.dumps(result).encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json; charset=UTF-8")
