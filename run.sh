@@ -464,7 +464,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
 from threading import Lock, Thread
 import re
-from mutagen.id3 import ID3, ID3NoHeaderError, TXXX, UFID, TIT2, TPE1, TALB, TDRC
+from mutagen.id3 import ID3, ID3NoHeaderError, TXXX, UFID, TIT2, TPE1, TALB, TDRC, TCON
 
 def update_download_state(status, message):
     with DOWNLOAD_STATE_LOCK:
@@ -874,7 +874,7 @@ def get_musicbrainz_suggestions(path):
     global MB_LAST_REQUEST
     st = os.stat(path)
     artist, title, query = musicbrainz_query_for_file(path)
-    cache_key = f"{os.path.realpath(path)}|{st.st_size}|{st.st_mtime_ns}|{query}"
+    cache_key = f"{os.path.realpath(path)}|{st.st_size}|{st.st_mtime_ns}|{query}|genre-v1"
     with MB_CACHE_LOCK:
         try:
             with open(MB_CACHE_FILE, "r", encoding="utf-8") as f:
@@ -886,7 +886,7 @@ def get_musicbrainz_suggestions(path):
             return {"cached": True, "query": query, "suggestions": cached.get("suggestions", [])}
             
     print(f"🔍 [Suggestions] Querying MusicBrainz")
-    params = urlencode({"query": query, "fmt": "json", "limit": 5})
+    params = urlencode({"query": query, "fmt": "json", "limit": 5, "inc": "tags+artist-credits+releases"})
     request = urllib.request.Request(
         "https://musicbrainz.org/ws/2/recording/?" + params,
         headers={"User-Agent": MB_USER_AGENT, "Accept": "application/json"},
@@ -928,12 +928,30 @@ def get_musicbrainz_suggestions(path):
         artist_name = "".join(str(c.get("name", c.get("artist", {}).get("name", ""))) for c in credits if isinstance(c, dict))
         releases = item.get("releases", [])
         release = releases[0] if releases else {}
+        # Use the same weighted top-three genre selection as tagger.py.
+        # The recording search's included tags are used here without making
+        # extra MusicBrainz requests for every result in the suggestion list.
+        raw_genres = list(item.get("tags", []) or item.get("tag-list", []) or [])
+        raw_genres.extend(release.get("tags", []) or release.get("tag-list", []) or [])
+        genre_scores = {}
+        for tag in raw_genres:
+            name = str(tag.get("name", "")).lower().strip()
+            try:
+                count = int(tag.get("count", 1))
+            except (TypeError, ValueError):
+                count = 1
+            if not name or name in ["rock", "pop", "american", "usa", "band", "male vocal"]:
+                continue
+            genre_scores[name] = genre_scores.get(name, 0) + count
+        sorted_genres = sorted(genre_scores.items(), key=lambda x: x[1], reverse=True)
+        genre = "; ".join(g[0].title() for g in sorted_genres[:3]) or "Rock"
         suggestions.append({
             "id": item.get("id", ""),
             "title": item.get("title", ""),
             "artist": artist_name or artist,
             "album": release.get("title", ""),
             "date": release.get("date", "")[:4],
+            "genre": genre,
             "score": item.get("score", 0),
             "length": item.get("length", 0),
         })
@@ -1139,6 +1157,7 @@ async function loadMusicBrainzSuggestions(path){
    row.style.cssText='display:block;width:100%;text-align:left;margin:8px 0;padding:12px;background:#263238;border:1px solid #03a9f4;border-radius:6px;white-space:normal;';
    row.append(el('div',`${i+1}. ${item.artist} — ${item.title}`,'tagkey'));
    row.append(el('div',[item.album,item.date,item.score?`Match ${item.score}%`: ''].filter(Boolean).join(' · ')||'No release details','tagvalue'));
+   row.append(el('div',`Genre: ${item.genre||'Rock'}`,'muted'));
    if(item.id)row.append(el('div',`Recording MBID: ${item.id}`,'muted'));
    row.append(el('div','▶ Tap to use this match and fill the tags','muted'));
    row.onclick=()=>applyMusicBrainzSuggestion(path,item,row);
@@ -1150,7 +1169,7 @@ async function applyMusicBrainzSuggestion(path,item,button){
  if(selected!==path)return;
  if(!item.id){notice('This suggestion has no MusicBrainz recording ID.');return;}
  const description=[item.artist,item.title].filter(Boolean).join(' — ');
- if(!confirm(`Apply this MusicBrainz match to the MP3 tags?\\n\\n${description}\\n\\nThis will update Artist, Title, Album, Year and the MusicBrainz Recording ID. Other tags will be preserved.`))return;
+ if(!confirm(`Apply this MusicBrainz match to the MP3 tags?\\n\\n${description}\\n\\nThis will update Artist, Title, Album, Year, Genre and the MusicBrainz Recording ID. Other tags will be preserved.`))return;
  button.disabled=true;
  try{
   const body=new URLSearchParams({
@@ -1160,6 +1179,7 @@ async function applyMusicBrainzSuggestion(path,item,button){
    title:item.title||'',
    album:item.album||'',
    date:item.date||'',
+   genre:item.genre||'Rock',
    recording_id:item.id
   });
   const r=await fetch(basePath,{method:'POST',body,credentials:'same-origin'});
@@ -1871,13 +1891,14 @@ class IngressHandler(BaseHTTPRequestHandler):
                     title = form.get("title", [""])[0].strip()
                     album = form.get("album", [""])[0].strip()
                     date = form.get("date", [""])[0].strip()
+                    genre = form.get("genre", [""])[0].strip()
                     recording_id = form.get("recording_id", [""])[0].strip()
 
                     if not recording_id or not re.fullmatch(r"[0-9a-fA-F-]{36}", recording_id):
                         raise ValueError("The MusicBrainz recording ID is missing or invalid.")
                     if not artist or not title:
                         raise ValueError("The suggestion must include both artist and title.")
-                    if any(len(value) > 1000 for value in (artist, title, album, date)):
+                    if any(len(value) > 1000 for value in (artist, title, album, date, genre)):
                         raise ValueError("One or more suggested tag values are too long.")
 
                     try:
@@ -1893,6 +1914,8 @@ class IngressHandler(BaseHTTPRequestHandler):
                         audio.delall("TALB")
                     if date:
                         audio.delall("TDRC")
+                    if genre:
+                        audio.delall("TCON")
 
                     audio.add(TPE1(encoding=3, text=[artist]))
                     audio.add(TIT2(encoding=3, text=[title]))
@@ -1900,6 +1923,8 @@ class IngressHandler(BaseHTTPRequestHandler):
                         audio.add(TALB(encoding=3, text=[album]))
                     if date:
                         audio.add(TDRC(encoding=3, text=[date]))
+                    if genre:
+                        audio.add(TCON(encoding=3, text=[genre]))
 
                     # Replace the MusicBrainz recording identifier only.
                     for key in list(audio.keys()):
@@ -1919,6 +1944,7 @@ class IngressHandler(BaseHTTPRequestHandler):
                         "message": "Applied MusicBrainz match: Artist, Title" +
                                    (", Album" if album else "") +
                                    (", Year" if date else "") +
+                                   (", Genre" if genre else "") +
                                    " and Recording ID. Other tags were preserved."
                     }
                     payload = json.dumps(result).encode("utf-8")
