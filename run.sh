@@ -2,7 +2,7 @@
 
 echo "========================================"
 echo "JAKE'S STATION RIPPER STARTING"
-echo "BUILD TEST: 2026-10-31-3"
+echo "BUILD TEST: 2026-11-01-1"
 echo "========================================"
 
 set -uo pipefail
@@ -339,6 +339,26 @@ fi
 STREAM_URLS_JSON=$(printf '%s\n' "${STREAM_URLS[@]}" |
     jq -Rsc 'split("\n") | map(select(length > 0))')
 export STREAM_URLS_JSON
+
+# status.json is an active-stream runtime file, not a bookmark/history of
+# every station ever used. Remove entries for streams no longer in options.json.
+# Saved bookmarks live separately in /data/saved_streams.json.
+if nas_state_is_online && [ -f "$STATUS_FILE" ]; then
+    ACTIVE_STATIONS_JSON=$(printf '%s\n' "${STREAM_URLS[@]}" |
+        awk -F/ 'NF >= 3 { name=$3; if (name != "") print name }' |
+        jq -Rsc 'split("\n") | map(select(length > 0))')
+    (
+        flock 200 || exit 0
+        if jq --argjson active "$ACTIVE_STATIONS_JSON" '
+            with_entries(select(.key as $name | ($active | index($name)) != null))
+        ' "$STATUS_FILE" > "${STATUS_FILE}.$$"; then
+            mv "${STATUS_FILE}.$$" "$STATUS_FILE"
+        else
+            rm -f "${STATUS_FILE}.$$"
+            echo "⚠️ Could not remove inactive stream statuses"
+        fi
+    ) 200>"$STATUS_LOCK"
+fi
 
 # Track Background
 RIPPER_PIDS=()
@@ -1147,47 +1167,60 @@ class IngressHandler(BaseHTTPRequestHandler):
         station_rows = ""
         reconnect_rows = ""
 
-        if nas_is_online() and os.path.exists(STATUS_FILE):
+        # Only URLs in the active add-on options are live. Bookmarks are kept
+        # separately and must never appear in status or connection monitoring.
+        try:
+            active_urls = set(get_configured_streams())
+        except Exception as e:
+            print(f"⚠️ Could not load active streams: {e}", flush=True)
+            active_urls = set()
+
+        active_stations = {}
+        for active_url in active_urls:
+            parsed_active = urlparse(active_url)
+            if parsed_active.netloc:
+                active_stations[parsed_active.netloc] = active_url
+
+        if nas_is_online() and active_stations:
             try:
                 with open(STATUS_FILE, 'r') as f:
                     data = json.load(f)
+                if not isinstance(data, dict):
+                    data = {}
 
-                for station, status in data.items():
+                # Iterate active stations, not every historical key in status.json.
+                for station in sorted(active_stations):
+                    status = data.get(station, {})
                     if isinstance(status, dict):
-                        state = status.get("status", "Unknown")
+                        state = status.get("status", "Starting")
                         reconnects = status.get("reconnects", 0)
                         last_error = status.get("last_error", "")
                     else:
-                        state = status
+                        state = str(status) if status else "Starting"
                         reconnects = 0
                         last_error = ""
 
-                    if state == "Ripping":
-                        indicator = "🟢"
-                    else:
-                        indicator = "🔴"
-
+                    indicator = "🟢" if state == "Ripping" else "🟠"
                     station_rows += f"""
                     <li>
-                        <span>{indicator} <strong>{station}</strong></span>
-                        <span>{state}</span>
+                        <span>{indicator} <strong>{html.escape(station)}</strong></span>
+                        <span>{html.escape(str(state))}</span>
                     </li>
                     """
-                    reconnect_text = f"{reconnects} reconnects"
+                    reconnect_text = f"{state} · {reconnects} reconnects"
                     if last_error:
                         reconnect_text += f" — {last_error}"
 
                     reconnect_rows += f"""
                     <li>
                         <div style="display: flex; flex-direction: column; width: 100%;">
-                            <span style="font-weight: bold; color: #fff;">{station}</span>
-                            <small style="color: #999; margin-top: 3px;">{reconnect_text}</small>
+                            <span style="font-weight: bold; color: #fff;">{html.escape(station)}</span>
+                            <small style="color: #999; margin-top: 3px;">{html.escape(reconnect_text)}</small>
                         </div>
                     </li>
                     """
-
-            except:
-                pass
+            except Exception as e:
+                print(f"⚠️ Could not load active stream status: {e}", flush=True)
 
         saved_stream_rows = ""
 
@@ -1196,12 +1229,6 @@ class IngressHandler(BaseHTTPRequestHandler):
         except Exception as e:
             print(f"⚠️ Could not load saved streams: {e}", flush=True)
             configured_streams = []
-
-        try:
-            active_urls = set(get_configured_streams())
-        except Exception as e:
-            print(f"⚠️ Could not load active streams: {e}", flush=True)
-            active_urls = set()
 
         for stream in configured_streams:
             name = html.escape(str(stream.get("name", "Unnamed station")))
@@ -1271,7 +1298,7 @@ class IngressHandler(BaseHTTPRequestHandler):
             station_rows = "<li>No active streams found</li>"
 
         if not reconnect_rows:
-            reconnect_rows = "<li>No stream information available</li>"
+            reconnect_rows = "<li>No active stream connections to monitor</li>"
 
         current_song = "No tracks yet"
 
@@ -2034,6 +2061,14 @@ export BASE_OUTPUT_DIR STATUS_FILE START_TIME ADS_REMOVED_FILE DUPLICATES_REMOVE
 # Shutdown function
 shutdown_handler() {
     echo "Shutting down Jakes Station Ripper..."
+
+    if nas_state_is_online; then
+        for URL in "${STREAM_URLS[@]}"; do
+            FOLDER_NAME=$(echo "$URL" | awk -F/ '{print $3}')
+            [ -z "$FOLDER_NAME" ] && FOLDER_NAME="stream"
+            update_status "$FOLDER_NAME" "Offline" "0" ""
+        done
+    fi
 
     if [ -n "${GLOBAL_WATCHER_PID:-}" ]; then
         kill "$GLOBAL_WATCHER_PID" 2>/dev/null || true
