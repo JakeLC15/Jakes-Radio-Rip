@@ -2,7 +2,7 @@
 
 echo "========================================"
 echo "JAKE'S STATION RIPPER STARTING"
-echo "BUILD TEST: 2026-11-01-4"
+echo "BUILD TEST: 2026-11-01-3"
 echo "========================================"
 
 set -uo pipefail
@@ -464,7 +464,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
 from threading import Lock, Thread
 import re
-from mutagen.id3 import ID3, ID3NoHeaderError, TXXX, UFID
+from mutagen.id3 import ID3, ID3NoHeaderError, TXXX, UFID, TIT2, TPE1, TALB, TDRC
 
 def update_download_state(status, message):
     with DOWNLOAD_STATE_LOCK:
@@ -1136,10 +1136,44 @@ async function loadMusicBrainzSuggestions(path){
    row.append(el('div',`${i+1}. ${item.artist} — ${item.title}`,'tagkey'));
    row.append(el('div',[item.album,item.date,item.score?`Match ${item.score}%`: ''].filter(Boolean).join(' · ')||'No release details','tagvalue'));
    if(item.id)row.append(el('div',`Recording MBID: ${item.id}`,'muted'));
+   const apply=document.createElement('button');
+   apply.type='button';
+   apply.textContent='Use this match & fill tags';
+   apply.style.marginTop='8px';
+   apply.onclick=()=>applyMusicBrainzSuggestion(path,item,apply);
+   row.append(apply);
    box.append(row);
   });
  }catch(e){if(selected===path){box.replaceChildren();box.append(el('p','MusicBrainz suggestions unavailable: '+e.message,'muted'));}}
 }
+async function applyMusicBrainzSuggestion(path,item,button){
+ if(selected!==path)return;
+ if(!item.id){notice('This suggestion has no MusicBrainz recording ID.');return;}
+ const description=[item.artist,item.title].filter(Boolean).join(' — ');
+ if(!confirm(`Apply this MusicBrainz match to the MP3 tags?\\n\\n${description}\\n\\nThis will update Artist, Title, Album, Year and the MusicBrainz Recording ID. Other tags will be preserved.`))return;
+ button.disabled=true;
+ try{
+  const body=new URLSearchParams({
+   action:'apply_musicbrainz_suggestion',
+   path,
+   artist:item.artist||'',
+   title:item.title||'',
+   album:item.album||'',
+   date:item.date||'',
+   recording_id:item.id
+  });
+  const r=await fetch(basePath,{method:'POST',body,credentials:'same-origin'});
+  const result=await r.json();
+  if(!r.ok||!result.ok)throw new Error(result.error||('HTTP '+r.status));
+  notice(result.message);
+  await refreshCurrentTags();
+ }catch(e){
+  notice('Could not apply MusicBrainz suggestion: '+e.message);
+ }finally{
+  button.disabled=false;
+ }
+}
+
 // Automatically refresh the displayed tags for the selected MP3.
 let tagRefreshTimer = null;
 let tagRefreshInProgress = false;
@@ -1824,6 +1858,83 @@ class IngressHandler(BaseHTTPRequestHandler):
             form = parse_qs(body)
             action = form.get("action", ["purge_duplicates"])[0]
 
+            if action == "apply_musicbrainz_suggestion":
+                try:
+                    require_nas_online()
+                    relative = form.get("path", [""])[0]
+                    target = music_path(relative)
+                    if not os.path.isfile(target) or not target.lower().endswith(".mp3"):
+                        raise ValueError("Select an existing MP3 file.")
+
+                    artist = form.get("artist", [""])[0].strip()
+                    title = form.get("title", [""])[0].strip()
+                    album = form.get("album", [""])[0].strip()
+                    date = form.get("date", [""])[0].strip()
+                    recording_id = form.get("recording_id", [""])[0].strip()
+
+                    if not recording_id or not re.fullmatch(r"[0-9a-fA-F-]{36}", recording_id):
+                        raise ValueError("The MusicBrainz recording ID is missing or invalid.")
+                    if not artist or not title:
+                        raise ValueError("The suggestion must include both artist and title.")
+                    if any(len(value) > 1000 for value in (artist, title, album, date)):
+                        raise ValueError("One or more suggested tag values are too long.")
+
+                    try:
+                        audio = ID3(target)
+                    except ID3NoHeaderError:
+                        audio = ID3()
+
+                    # Replace only the standard fields supplied by this match.
+                    # All unrelated ID3 frames are retained.
+                    audio.delall("TPE1")
+                    audio.delall("TIT2")
+                    if album:
+                        audio.delall("TALB")
+                    if date:
+                        audio.delall("TDRC")
+
+                    audio.add(TPE1(encoding=3, text=[artist]))
+                    audio.add(TIT2(encoding=3, text=[title]))
+                    if album:
+                        audio.add(TALB(encoding=3, text=[album]))
+                    if date:
+                        audio.add(TDRC(encoding=3, text=[date]))
+
+                    # Replace the MusicBrainz recording identifier only.
+                    for key in list(audio.keys()):
+                        frame = audio[key]
+                        desc = str(getattr(frame, "desc", ""))
+                        owner = str(getattr(frame, "owner", ""))
+                        if (key.startswith("TXXX:") and desc.lower() in
+                                ("musicbrainz track id", "musicbrainz recording id")) or (
+                                key.startswith("UFID:") and "musicbrainz.org" in owner.lower()
+                        ):
+                            del audio[key]
+                    audio.add(TXXX(encoding=3, desc="MusicBrainz Track Id", text=[recording_id.lower()]))
+                    audio.save(target)
+
+                    result = {
+                        "ok": True,
+                        "message": "Applied MusicBrainz match: Artist, Title" +
+                                   (", Album" if album else "") +
+                                   (", Year" if date else "") +
+                                   " and Recording ID. Other tags were preserved."
+                    }
+                    payload = json.dumps(result).encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json; charset=UTF-8")
+                    self.send_header("Content-Length", str(len(payload)))
+                    self.end_headers()
+                    self.wfile.write(payload)
+                except Exception as exc:
+                    payload = json.dumps({"ok": False, "error": str(exc)}).encode("utf-8")
+                    self.send_response(400)
+                    self.send_header("Content-Type", "application/json; charset=UTF-8")
+                    self.send_header("Content-Length", str(len(payload)))
+                    self.end_headers()
+                    self.wfile.write(payload)
+                return
+
             if action == "edit_music_tags":
                 try:
                     require_nas_online()
@@ -2279,5 +2390,7 @@ python3 /tmp/server.py &
 PYTHON_PID=$!
 
 # Wait for Python server
+
+
 
 wait "$PYTHON_PID"
