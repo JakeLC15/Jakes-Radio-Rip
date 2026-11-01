@@ -2,7 +2,7 @@
 
 echo "========================================"
 echo "JAKE'S STATION RIPPER STARTING"
-echo "BUILD TEST: 2026-11-01-3"
+echo "BUILD TEST: 2026-11-01-4"
 echo "========================================"
 
 set -uo pipefail
@@ -1911,7 +1911,7 @@ class IngressHandler(BaseHTTPRequestHandler):
                                 key.startswith("UFID:") and "musicbrainz.org" in owner.lower()
                         ):
                             del audio[key]
-                    audio.add(TXXX(encoding=3, desc="MusicBrainz Track Id", text=[recording_id.lower()]))
+                    audio.add(TXXX(encoding=3, desc="MusicBrainz Recording Id", text=[recording_id.lower()]))
                     audio.save(target)
 
                     result = {
