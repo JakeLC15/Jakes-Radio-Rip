@@ -2,7 +2,7 @@
 
 echo "========================================"
 echo "JAKE'S STATION RIPPER STARTING"
-echo "BUILD TEST: 2026-11-01-3"
+echo "BUILD TEST: 2026-11-01-4"
 echo "========================================"
 
 set -uo pipefail
@@ -885,7 +885,7 @@ def get_musicbrainz_suggestions(path):
         if cached and time.time() - cached.get("time", 0) < MB_CACHE_TTL:
             return {"cached": True, "query": query, "suggestions": cached.get("suggestions", [])}
             
-    print(f"🔍 [Suggestions] Querying MusicBrainz", flush=True)
+    print(f"🔍 [Suggestions] Querying MusicBrainz")
     params = urlencode({"query": query, "fmt": "json", "limit": 5})
     request = urllib.request.Request(
         "https://musicbrainz.org/ws/2/recording/?" + params,
@@ -1224,6 +1224,20 @@ loadFolder('',0);
 </script></body></html>"""
 
 class IngressHandler(BaseHTTPRequestHandler):
+    def log_message(self, format, *args):
+        # Keep routine successful GET requests (dashboard refreshes and UI API
+        # polling) out of the add-on log. Preserve errors and non-GET activity.
+        if format == '"%s" %s %s' and len(args) >= 2:
+            try:
+                status = int(args[1])
+            except (TypeError, ValueError):
+                status = 0
+
+            if self.command == "GET" and 200 <= status < 400:
+                return
+
+        super().log_message(format, *args)
+
     def _get_files(self):
         if not nas_is_online():
             return [], 0
@@ -2265,6 +2279,5 @@ python3 /tmp/server.py &
 PYTHON_PID=$!
 
 # Wait for Python server
-
 
 wait "$PYTHON_PID"
