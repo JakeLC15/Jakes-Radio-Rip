@@ -451,6 +451,7 @@ import os
 import subprocess
 import json
 import time
+import fcntl
 import shutil
 import html
 import threading
