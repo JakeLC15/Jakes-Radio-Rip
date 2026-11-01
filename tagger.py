@@ -54,7 +54,7 @@ def clean_and_tag_file(file_path, raw_title):
     search_title = title.strip()
 
     try:
-        print(f"🔍 Querying MusicBrainz for: {search_artist} - {search_title}")
+        print(f"🔍 [Tagger] Querying MusicBrainz for: {search_artist} - {search_title}")
 
         result = musicbrainz_request(
             musicbrainzngs.search_recordings,
@@ -85,10 +85,10 @@ def clean_and_tag_file(file_path, raw_title):
                 return " ".join(out.split())
 
             if normalize_str(search_artist) not in normalize_str(clean_artist) and normalize_str(clean_artist) not in normalize_str(search_artist):
-                print(f"❌ Match rejected (Artist Mismatch): '{search_artist}' vs '{clean_artist}'")
+                print(f"❌ [Tagger] Match rejected (Artist Mismatch): '{search_artist}' vs '{clean_artist}'")
                 return
             if normalize_str(search_title) not in normalize_str(clean_title) and normalize_str(clean_title) not in normalize_str(search_title):
-                print(f"❌ Match rejected (Title Mismatch): '{search_title}' vs '{clean_title}'")
+                print(f"❌ [Tagger] Match rejected (Title Mismatch): '{search_title}' vs '{clean_title}'")
                 return
 
             album_name = "Jakes Rip"
@@ -169,12 +169,12 @@ def clean_and_tag_file(file_path, raw_title):
                 audio['TXXX:MusicBrainz Release Group Id'] = TXXX(encoding=3, desc='MusicBrainz Release Group Id', text=rg_id)
 
             audio.save(file_path)
-            print(f"✅ Successfully tagged: {clean_artist} - {clean_title} [Album: {album_name}] [Track #: {track_num}] [Year: {release_date[:4]}] [Genre: {genre_name}]")
+            print(f"✅ [Tagger] Successfully tagged: {clean_artist} - {clean_title} [Album: {album_name}] [Track #: {track_num}] [Year: {release_date[:4]}] [Genre: {genre_name}]")
         else:
-            print(f"🔍🚫 No match found for: {raw_title}")
+            print(f"🔍🚫 [Tagger] No match found for: {raw_title}")
                 
     except Exception as e:
-        print(f"Metadata processing failure: {e}")
+        print(f"[Tagger] Metadata processing failure: {e}")
 
 if __name__ == "__main__":
     if len(sys.argv) >= 3:
