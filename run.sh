@@ -1058,16 +1058,29 @@ def _get_musicbrainz_suggestions_unlocked(path):
             )
 
             releases = recording.get("releases", [])
-            release = (
-                releases[0].get("title", "")
-                if releases else ""
-            )
+
+            release = ""
+            release_date = ""
+
+            if releases:
+                first_release = releases[0]
+
+                if isinstance(first_release, dict):
+                    release = first_release.get("title", "")
+                    release_date = first_release.get("date", "")
+
+                    # Fall back to release-group title if necessary.
+                    if not release:
+                        release_group = first_release.get("release-group", {})
+                        if isinstance(release_group, dict):
+                            release = release_group.get("title", "")
 
             suggestions.append({
                 "id": recording.get("id", ""),
                 "title": recording.get("title", ""),
                 "artist": artist,
                 "release": release,
+                "release_date": release_date,
                 "genre": musicbrainz_suggestion_genre(
                     path, recording
                 )
