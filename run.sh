@@ -847,6 +847,11 @@ MB_CACHE_FILE = os.path.join(BASE_OUTPUT_DIR, ".musicbrainz_suggestions_cache.js
 MB_CACHE_LOCK = Lock()
 MB_REQUEST_LOCK_FILE = "/tmp/musicbrainz_api.lock"
 MB_CACHE_TTL = 30 * 24 * 60 * 60
+MB_SUGGESTION_LOCKS_GUARD = threading.Lock()
+MB_SUGGESTION_LOCKS = {}
+
+MUSICBRAINZ_REQUEST_LOCK = threading.Lock()
+MUSICBRAINZ_LAST_REQUEST = [0]
 MB_USER_AGENT = "JakesStationRipper/2026.11 (https://github.com/JakeLC15/Jakes-Radio-Rip)"
 
 def musicbrainz_query_for_file(path):
@@ -922,14 +927,11 @@ def musicbrainz_suggestion_genre(item, release, file_path=None):
 
 def load_musicbrainz_cache():
     try:
-        if os.path.exists(MB_CACHE_FILE):
-            with open(MB_CACHE_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                return data if isinstance(data, dict) else {}
-    except Exception as e:
-        print(f"[MusicBrainz] Cache read error: {e}", flush=True)
-
-    return {}
+        with open(MB_CACHE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
 
 def save_musicbrainz_cache(cache):
     try:
@@ -1063,11 +1065,6 @@ def _get_musicbrainz_suggestions_unlocked(path):
             "cached": False,
             "error": str(e)
         }
-
-# If the browser sends duplicate suggestion requests for the same file, make
-# them share one lookup instead of serially querying MusicBrainz twice.
-MB_SUGGESTION_LOCKS = {}
-MB_SUGGESTION_LOCKS_GUARD = Lock()
 
 def get_musicbrainz_suggestions(path):
     query = musicbrainz_query_for_file(path)
