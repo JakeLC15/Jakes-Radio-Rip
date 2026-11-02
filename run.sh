@@ -1348,6 +1348,7 @@ def has_musicbrainz_tags(file_path):
     return False
 
 def start_music_tag_scan(folder, mp3_names):
+    """Build the filtered view from cache; inspect only uncached/changed MP3s."""
     folder_key = os.path.realpath(folder)
     entries = []
     for name in mp3_names:
@@ -1359,38 +1360,64 @@ def start_music_tag_scan(folder, mp3_names):
         except OSError:
             continue
 
-    # Deliberately exclude names: a rename preserves device/inode/size/mtime.
-    signature = tuple(sorted((identity, size, mtime_ns) for _, identity, size, mtime_ns in entries))
+    # Names are intentionally excluded so a rename preserves the cached result.
+    signature = tuple(sorted((identity, size, mtime_ns)
+                             for _, identity, size, mtime_ns in entries))
     with MUSIC_TAG_SCAN_LOCK:
         state = MUSIC_TAG_SCAN_STATE.get(folder_key)
         if state and state.get("signature") == signature:
             return state
-        state = {"signature": signature, "running": True, "scanned": 0,
-                 "total": len(entries), "tagged_ids": set()}
+
+        # Resolve every unchanged file directly from memory. Only files missing
+        # from the cache, or whose size/mtime changed, enter the background scan.
+        tagged_ids = set()
+        pending = []
+        for name, identity, size, mtime_ns in entries:
+            cached = MUSIC_TAG_FILE_CACHE.get(identity)
+            if cached and cached[0] == size and cached[1] == mtime_ns:
+                if cached[2]:
+                    tagged_ids.add(identity)
+            else:
+                pending.append((name, identity, size, mtime_ns))
+
+        state = {
+            "signature": signature,
+            "running": bool(pending),
+            "scanned": len(entries) - len(pending),
+            "total": len(entries),
+            "tagged_ids": tagged_ids,
+        }
         MUSIC_TAG_SCAN_STATE[folder_key] = state
 
+    if not pending:
+        return state
+
     def worker():
-        tagged_ids = set()
-        for index, (name, identity, size, mtime_ns) in enumerate(entries, 1):
+        for name, identity, size, mtime_ns in pending:
             path = os.path.join(folder_key, name)
-            with MUSIC_TAG_SCAN_LOCK:
-                cached = MUSIC_TAG_FILE_CACHE.get(identity)
-            if cached and cached[0] == size and cached[1] == mtime_ns:
-                tagged = cached[2]
-            else:
+            try:
                 tagged = has_musicbrainz_tags(path)
-                with MUSIC_TAG_SCAN_LOCK:
-                    MUSIC_TAG_FILE_CACHE[identity] = (size, mtime_ns, tagged)
-            if tagged:
-                tagged_ids.add(identity)
+                # Don't cache a result if the file changed while it was read.
+                st = os.stat(path)
+                if ((st.st_dev, st.st_ino) != identity or
+                        st.st_size != size or st.st_mtime_ns != mtime_ns):
+                    tagged = None
+            except OSError:
+                tagged = None
+
             with MUSIC_TAG_SCAN_LOCK:
                 current = MUSIC_TAG_SCAN_STATE.get(folder_key)
-                if current is state:
-                    current["scanned"] = index
+                if current is not state:
+                    return
+                if tagged is not None:
+                    MUSIC_TAG_FILE_CACHE[identity] = (size, mtime_ns, tagged)
+                    if tagged:
+                        current["tagged_ids"].add(identity)
+                current["scanned"] += 1
+
         with MUSIC_TAG_SCAN_LOCK:
             current = MUSIC_TAG_SCAN_STATE.get(folder_key)
             if current is state:
-                current["tagged_ids"] = tagged_ids
                 current["running"] = False
 
     Thread(target=worker, daemon=True, name="music-tag-folder-scan").start()
