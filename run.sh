@@ -977,7 +977,15 @@ def musicbrainz_request(url):
 
 
 def _get_musicbrainz_suggestions_unlocked(path):
-    query_result = musicbrainz_query_for_file(path)
+    artist, title, query = musicbrainz_query_for_file(path)
+
+    if not query:
+        return {
+            "query": "",
+            "suggestions": [],
+            "cached": False,
+            "error": "Could not create search query"
+        }
 
     if isinstance(query_result, tuple):
         query = query_result[0]
@@ -1102,16 +1110,8 @@ def _get_musicbrainz_suggestions_unlocked(path):
             "cached": False,
             "error": str(e)
         }
-
 def get_musicbrainz_suggestions(path):
-    query_result = musicbrainz_query_for_file(path)
-
-    if isinstance(query_result, tuple):
-        query = query_result[0]
-    else:
-        query = query_result
-
-    query = str(query or "")
+    artist, title, query = musicbrainz_query_for_file(path)
 
     if not query:
         return {
@@ -1130,9 +1130,8 @@ def get_musicbrainz_suggestions(path):
         request_lock = MB_SUGGESTION_LOCKS[lock_key]
 
     with request_lock:
-        # Recheck cache after acquiring lock.
         return _get_musicbrainz_suggestions_unlocked(path)
-        
+
 def music_editor_page():
     return """<!DOCTYPE html>
 <html style="background:#111;color:#eee"><head>
