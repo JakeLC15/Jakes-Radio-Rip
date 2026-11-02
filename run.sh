@@ -2,7 +2,7 @@
 
 echo "========================================"
 echo "JAKE'S STATION RIPPER STARTING"
-echo "BUILD TEST: 2026-11-02-1"
+echo "BUILD TEST: 2026-11-02-2"
 echo "========================================"
 
 set -uo pipefail
@@ -905,8 +905,31 @@ def musicbrainz_lookup_json(entity, entity_id, includes="tags"):
             lock_file.flush()
             fcntl.flock(lock_file, fcntl.LOCK_UN)
 
-def musicbrainz_suggestion_genre(item, release):
-    """Mirror tagger.py's recording + release + release-group + artist genre harvest."""
+def musicbrainz_suggestion_genre(item, release, file_path=None):
+    """Use the file's already-verified genre for the same recording; otherwise mirror tagger.py."""
+    recording_id = str(item.get("id", "")).strip()
+    stored_recording_id = ""
+    stored_release_group_id = ""
+
+    # If this exact recording is already tagged, preserve the genre selected by tagger.py.
+    # This also avoids extra MusicBrainz requests for a file that already has correct metadata.
+    if file_path:
+        try:
+            current_audio = ID3(file_path)
+            recording_frame = current_audio.get("TXXX:MusicBrainz Recording Id")
+            if recording_frame and recording_frame.text:
+                stored_recording_id = str(recording_frame.text[0]).strip()
+            group_frame = current_audio.get("TXXX:MusicBrainz Release Group Id")
+            if group_frame and group_frame.text:
+                stored_release_group_id = str(group_frame.text[0]).strip()
+            genre_frame = current_audio.get("TCON")
+            if recording_id and stored_recording_id == recording_id and genre_frame and genre_frame.text:
+                existing_genre = "; ".join(str(value).strip() for value in genre_frame.text if str(value).strip())
+                if existing_genre:
+                    return existing_genre
+        except Exception as exc:
+            print(f"⚠️ [Suggestions] Could not inspect existing ID3 genre: {exc}", flush=True)
+
     raw_genres = list(item.get("tags", []) or item.get("tag-list", []) or [])
     raw_genres.extend(release.get("tags", []) or release.get("tag-list", []) or [])
 
@@ -918,7 +941,7 @@ def musicbrainz_suggestion_genre(item, release):
             if artist_id:
                 break
 
-    release_group_id = (release.get("release-group") or {}).get("id")
+    release_group_id = stored_release_group_id or (release.get("release-group") or {}).get("id")
     if release_group_id:
         try:
             group_data = musicbrainz_lookup_json("release-group", release_group_id, "tags")
@@ -954,7 +977,7 @@ def get_musicbrainz_suggestions(path):
     global MB_LAST_REQUEST
     st = os.stat(path)
     artist, title, query = musicbrainz_query_for_file(path)
-    cache_key = f"{os.path.realpath(path)}|{st.st_size}|{st.st_mtime_ns}|{query}|genre-v2"
+    cache_key = f"{os.path.realpath(path)}|{st.st_size}|{st.st_mtime_ns}|{query}|genre-v3"
     with MB_CACHE_LOCK:
         try:
             with open(MB_CACHE_FILE, "r", encoding="utf-8") as f:
@@ -1008,7 +1031,8 @@ def get_musicbrainz_suggestions(path):
         artist_name = "".join(str(c.get("name", c.get("artist", {}).get("name", ""))) for c in credits if isinstance(c, dict))
         releases = item.get("releases", [])
         release = releases[0] if releases else {}
-        genre = musicbrainz_suggestion_genre(item, release)
+        # Reuse this file's verified genre when the recording MBID matches; otherwise look up tags.
+        genre = musicbrainz_suggestion_genre(item, release, path)
         suggestions.append({
             "id": item.get("id", ""),
             "title": item.get("title", ""),
@@ -1083,12 +1107,22 @@ async function loadFolder(dir='',p=0){
  currentDir=dir;page=p;document.getElementById('folders').replaceChildren();document.getElementById('songs').replaceChildren();document.getElementById('pager').replaceChildren();
  document.getElementById('editor').hidden=true;
  stopTagRefresh();
+ const requestedDir=currentDir, requestedPage=page, filterModeForRefresh=currentFilter;
  try{
   const d=await getJSON({api:'music_list',dir:currentDir,page:String(page),filter:currentFilter});
   const crumbs=document.getElementById('crumbs');crumbs.replaceChildren();
   const up=el('button','⬆ Parent folder');up.onclick=()=>loadFolder(d.parent||'',0);document.getElementById('folders').append(up);
   crumbs.append(el('p','Folder: /'+(currentDir||''),'muted'));
   d.dirs.forEach(name=>{const b=el('button','📁 '+name);b.onclick=()=>loadFolder(currentDir?currentDir+'/'+name:name,0);document.getElementById('folders').append(b);});
+  if(d.scanning){
+   document.getElementById('songs').append(el('p',`Scanning MusicBrainz tags… ${d.scanned||0} / ${d.scan_total||d.total}`,'muted'));
+   window.setTimeout(()=>{
+    if(!document.hidden && document.getElementById('editor').hidden && currentDir===requestedDir && currentFilter===filterModeForRefresh){
+     loadFolder(requestedDir,requestedPage);
+    }
+   },1200);
+   return;
+  }
   const table=document.createElement('table');
   d.files.forEach(f=>{
    const tr=document.createElement('tr'),td=document.createElement('td'),act=document.createElement('td');
@@ -1341,6 +1375,76 @@ async function saveFile(reset=false){
 }
 loadFolder('',0);
 </script></body></html>"""
+
+# Large-folder MusicBrainz tag scans run in the background so the Ingress
+# request thread can return immediately. Per-file results are cached against
+# size + mtime, so unchanged MP3s are not repeatedly opened and parsed.
+MUSIC_TAG_SCAN_LOCK = Lock()
+MUSIC_TAG_FILE_CACHE = {}  # realpath -> (size, mtime_ns, has_musicbrainz)
+MUSIC_TAG_SCAN_STATE = {}  # folder -> {signature, running, scanned, tagged_names}
+
+def has_musicbrainz_tags(file_path):
+    try:
+        audio = ID3(file_path)
+        for key in audio.keys():
+            frame = audio[key]
+            desc = str(getattr(frame, "desc", "")).lower()
+            owner = str(getattr(frame, "owner", "")).lower()
+            if (key.startswith("TXXX:") and desc.startswith("musicbrainz")) or (
+                key.startswith("UFID:") and "musicbrainz" in owner
+            ):
+                return True
+    except Exception:
+        # A damaged or unusual MP3 should count as untagged, not kill the scan.
+        pass
+    return False
+
+def start_music_tag_scan(folder, mp3_names):
+    folder_key = os.path.realpath(folder)
+    signature_items = []
+    for name in mp3_names:
+        path = os.path.join(folder_key, name)
+        try:
+            st = os.stat(path)
+            signature_items.append((name, st.st_size, st.st_mtime_ns))
+        except OSError:
+            continue
+    signature = tuple(signature_items)
+
+    with MUSIC_TAG_SCAN_LOCK:
+        state = MUSIC_TAG_SCAN_STATE.get(folder_key)
+        if state and state.get("signature") == signature:
+            return state
+        state = {"signature": signature, "running": True, "scanned": 0,
+                 "total": len(signature), "tagged_names": set()}
+        MUSIC_TAG_SCAN_STATE[folder_key] = state
+
+    def worker():
+        tagged_names = set()
+        for index, (name, size, mtime_ns) in enumerate(signature, 1):
+            path = os.path.join(folder_key, name)
+            with MUSIC_TAG_SCAN_LOCK:
+                cached = MUSIC_TAG_FILE_CACHE.get(path)
+            if cached and cached[0] == size and cached[1] == mtime_ns:
+                tagged = cached[2]
+            else:
+                tagged = has_musicbrainz_tags(path)
+                with MUSIC_TAG_SCAN_LOCK:
+                    MUSIC_TAG_FILE_CACHE[path] = (size, mtime_ns, tagged)
+            if tagged:
+                tagged_names.add(name)
+            with MUSIC_TAG_SCAN_LOCK:
+                current = MUSIC_TAG_SCAN_STATE.get(folder_key)
+                if current is state:
+                    current["scanned"] = index
+        with MUSIC_TAG_SCAN_LOCK:
+            current = MUSIC_TAG_SCAN_STATE.get(folder_key)
+            if current is state:
+                current["tagged_names"] = tagged_names
+                current["running"] = False
+
+    Thread(target=worker, daemon=True, name="music-tag-folder-scan").start()
+    return state
 
 class IngressHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
@@ -2312,40 +2416,40 @@ class IngressHandler(BaseHTTPRequestHandler):
                 if filter_mode not in ("both", "tagged", "untagged"):
                     filter_mode = "both"
 
-                def has_musicbrainz_tags(file_path):
-                    try:
-                        audio = ID3(file_path)
-                        for key in audio.keys():
-                            frame = audio[key]
-                            desc = str(getattr(frame, "desc", "")).lower()
-                            owner = str(getattr(frame, "owner", "")).lower()
-                            if (key.startswith("TXXX:") and desc.startswith("musicbrainz")) or (
-                                key.startswith("UFID:") and "musicbrainz" in owner
-                            ):
-                                return True
-                    except (ID3NoHeaderError, OSError):
-                        pass
-                    return False
-
-                # For filtered views, inspect every file so filtering applies to
-                # the whole folder before pagination. Show All stays lightweight
-                # and only inspects the 25 files on the requested page.
+                # Filtered views scan the folder asynchronously. The browser
+                # receives progress immediately instead of waiting while hundreds
+                # of ID3 files are opened on the request thread.
+                scanning = False
+                scanned = 0
+                scan_total = len(mp3_names)
                 if filter_mode == "both":
                     total = len(mp3_names)
                     page_names = mp3_names[page * page_size:(page + 1) * page_size]
                 else:
-                    matching_names = []
-                    for name in mp3_names:
-                        tagged = has_musicbrainz_tags(os.path.join(folder, name))
-                        if (filter_mode == "tagged" and tagged) or (filter_mode == "untagged" and not tagged):
-                            matching_names.append(name)
-                    total = len(matching_names)
-                    page_names = matching_names[page * page_size:(page + 1) * page_size]
+                    scan_state = start_music_tag_scan(folder, mp3_names)
+                    with MUSIC_TAG_SCAN_LOCK:
+                        scanning = bool(scan_state.get("running"))
+                        scanned = int(scan_state.get("scanned", 0))
+                        scan_total = int(scan_state.get("total", len(mp3_names)))
+                        tagged_names = set(scan_state.get("tagged_names", set()))
+                    if scanning:
+                        total = scan_total
+                        page_names = []
+                    else:
+                        if filter_mode == "tagged":
+                            matching_names = [name for name in mp3_names if name in tagged_names]
+                        else:
+                            matching_names = [name for name in mp3_names if name not in tagged_names]
+                        total = len(matching_names)
+                        page_names = matching_names[page * page_size:(page + 1) * page_size]
 
                 files = []
                 for name in page_names:
                     file_path = os.path.join(folder, name)
-                    has_mb = has_musicbrainz_tags(file_path)
+                    if filter_mode == "both":
+                        has_mb = has_musicbrainz_tags(file_path)
+                    else:
+                        has_mb = name in tagged_names
                     files.append({
                         "name": name,
                         "path": music_relative(file_path),
@@ -2357,7 +2461,10 @@ class IngressHandler(BaseHTTPRequestHandler):
                     "dirs": dirs,
                     "files": files,
                     "total": total,
-                    "page_size": page_size
+                    "page_size": page_size,
+                    "scanning": scanning,
+                    "scanned": scanned,
+                    "scan_total": scan_total
                 }
                 payload = json.dumps(result).encode("utf-8")
                 self.send_response(200)
