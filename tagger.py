@@ -10,41 +10,50 @@ musicbrainzngs.set_useragent("JakesStationRipper", "2026.11", "https://github.co
 
 def musicbrainz_request(function, *args, **kwargs):
     lock_file_path = "/tmp/musicbrainz_api.lock"
-
+    
+    # Open with "r+" so we can read and write without appending or clearing early
     with open(lock_file_path, "a+") as lock_file:
         fcntl.flock(lock_file, fcntl.LOCK_EX)
-
+        
         lock_file.seek(0)
+        content = lock_file.read().strip()
         try:
-            last_request = float(lock_file.read().strip() or "0")
+            last_request = float(content or "0")
         except ValueError:
             last_request = 0.0
-
-        elapsed = time.time() - last_request
+            
+        now = time.time()
+        elapsed = now - last_request
+        
         if elapsed < 2.0:
-            time.sleep(2.0 - elapsed)
+            sleep_time = 2.0 - elapsed
+            time.sleep(sleep_time)
+            now = time.time() # Update 'now' after sleeping
+            
+        # CRITICAL BUG FIX: Write the current timestamp immediately 
+        # BEFORE executing the function so other threads see the block.
+        lock_file.seek(0)
+        lock_file.truncate()
+        lock_file.write(str(now))
+        lock_file.flush()
+        os.fsync(lock_file.fileno()) # Force OS memory to disk immediately
+        
+        # Release global lock early so other threads can queue up and sleep 
+        # instead of blocking the entire application execution pipeline
+        fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+    # Now execute the actual network request cleanly outside the lock
+    for attempt in range(3):
         try:
-            for attempt in range(3):
-                try:
-                    return function(*args, **kwargs)
-                except Exception as exc:
-                    message = str(exc).lower()
-                    is_rate_limit = "503" in message or "service unavailable" in message
-                    if not is_rate_limit or attempt >= 2:
-                        raise
-                    backoff = 4.0 * (2 ** attempt)
-                    print(f"⚠️ MusicBrainz returned 503; retrying in {backoff:.0f}s", flush=True)
-                    lock_file.seek(0)
-                    lock_file.truncate()
-                    lock_file.write(str(time.time()))
-                    lock_file.flush()
-                    time.sleep(backoff)
-        finally:
-            lock_file.seek(0)
-            lock_file.truncate()
-            lock_file.write(str(time.time()))
-            lock_file.flush()
-            fcntl.flock(lock_file, fcntl.LOCK_UN)
+            return function(*args, **kwargs)
+        except Exception as exc:
+            message = str(exc).lower()
+            is_rate_limit = "503" in message or "service unavailable" in message
+            if not is_rate_limit or attempt >= 2:
+                raise
+            backoff = 4.0 * (2 ** attempt)
+            print(f"⚠️ MusicBrainz returned 503; retrying in {backoff:.0f}s", flush=True)
+            time.sleep(backoff)
 
 def _clean_and_tag_file_unlocked(file_path, raw_title):
     if not os.path.exists(file_path):
