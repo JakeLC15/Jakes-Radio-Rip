@@ -987,21 +987,6 @@ def _get_musicbrainz_suggestions_unlocked(path):
             "error": "Could not create search query"
         }
 
-    if isinstance(query_result, tuple):
-        query = query_result[0]
-    else:
-        query = query_result
-
-    query = str(query or "")
-    
-    if not query:
-        return {
-            "query": "",
-            "suggestions": [],
-            "cached": False,
-            "error": "Could not create search query"
-        }
-
     cache_key = query.strip().lower() + "|genre-v4"
 
     # Check persistent cache.
@@ -1112,6 +1097,7 @@ def _get_musicbrainz_suggestions_unlocked(path):
         }
 def get_musicbrainz_suggestions(path):
     artist, title, query = musicbrainz_query_for_file(path)
+    query = str(query or "").strip()
 
     if not query:
         return {
