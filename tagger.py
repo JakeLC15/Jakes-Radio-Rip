@@ -2,6 +2,7 @@ import sys
 import time
 import os
 import fcntl
+import hashlib
 import musicbrainzngs
 from mutagen.id3 import ID3, TIT2, TPE1, TALB, TCON, TRCK, TDRC, TPE2, TXXX
 
@@ -45,7 +46,7 @@ def musicbrainz_request(function, *args, **kwargs):
             lock_file.flush()
             fcntl.flock(lock_file, fcntl.LOCK_UN)
 
-def clean_and_tag_file(file_path, raw_title):
+def _clean_and_tag_file_unlocked(file_path, raw_title):
     if not os.path.exists(file_path):
         return
 
@@ -68,7 +69,7 @@ def clean_and_tag_file(file_path, raw_title):
     search_title = title.strip()
 
     try:
-        print(f"🔍 [Tagger] Querying MusicBrainz for: {search_artist} - {search_title}")
+        print(f"🔍 Querying MusicBrainz for: {search_artist} - {search_title}")
 
         result = musicbrainz_request(
             musicbrainzngs.search_recordings,
@@ -188,9 +189,32 @@ def clean_and_tag_file(file_path, raw_title):
             print(f"❌ No match found for: {raw_title}")
                 
     except Exception as e:
-        print(f"❓ Metadata processing failure: {e}")
+        print(f"🚫 Metadata processing failure: {e}")
+
+def has_musicbrainz_recording_id(file_path):
+    try:
+        audio = ID3(file_path)
+        frame = audio.get("TXXX:MusicBrainz Recording Id")
+        return bool(frame and frame.text and str(frame.text[0]).strip())
+    except Exception:
+        return False
+
+def clean_and_tag_file(file_path, raw_title):
+    # Serialize all tagger processes for this path. The MBID check inside the
+    # protected function is repeated after acquiring the lock, so concurrent
+    # watcher events cannot both perform MusicBrainz lookups.
+    canonical = os.path.realpath(file_path)
+    lock_key = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    lock_path = f"/tmp/jakes_station_ripper_tagger_{lock_key}.lock"
+    with open(lock_path, "a+") as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        try:
+            return _clean_and_tag_file_unlocked(file_path, raw_title)
+        finally:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
 
 if __name__ == "__main__":
+    if len(sys.argv) == 3 and sys.argv[1] == "--is-tagged":
+        sys.exit(0 if has_musicbrainz_recording_id(sys.argv[2]) else 1)
     if len(sys.argv) >= 3:
-
         clean_and_tag_file(sys.argv[1], sys.argv[2])
