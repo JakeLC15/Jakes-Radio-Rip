@@ -919,9 +919,10 @@ def get_musicbrainz_suggestions(path):
             cache = {}
         cached = cache.get(cache_key)
         if cached and time.time() - cached.get("time", 0) < MB_CACHE_TTL:
+            print(f"📦 [Suggestions] Cache hit: {query}", flush=True)
             return {"cached": True, "query": query, "suggestions": cached.get("suggestions", [])}
-            
-    print(f"🔍 [Suggestions] Querying MusicBrainz")
+
+    print(f"🔍 [Suggestions] Querying MusicBrainz: {query}", flush=True)
     params = urlencode({"query": query, "fmt": "json", "limit": 5, "inc": "tags+artist-credits+releases"})
     request = urllib.request.Request(
         "https://musicbrainz.org/ws/2/recording/?" + params,
