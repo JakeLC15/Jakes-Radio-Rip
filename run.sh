@@ -871,40 +871,100 @@ def musicbrainz_suggestion_genre(path, recording):
         if not isinstance(recording, dict):
             return "Rock"
 
-        # First check recording-level tags.
-        tags = recording.get("tags", [])
+        raw_genres = []
 
-        # Then check release-group tags.
-        if not tags:
-            releases = recording.get("releases", [])
+        # 1. Recording-level tags
+        if isinstance(recording.get("tags"), list):
+            raw_genres.extend(recording["tags"])
 
-            for release in releases:
-                if not isinstance(release, dict):
-                    continue
+        # 2. Release-level and release-group tags
+        releases = recording.get("releases", [])
 
-                release_group = release.get("release-group", {})
+        artist_id = None
+        release_group_id = None
 
-                if isinstance(release_group, dict):
-                    tags = release_group.get("tags", [])
+        for release in releases:
+            if not isinstance(release, dict):
+                continue
 
-                if tags:
+            if isinstance(release.get("tags"), list):
+                raw_genres.extend(release["tags"])
+
+            release_group = release.get("release-group", {})
+            if isinstance(release_group, dict):
+                release_group_id = release_group.get("id") or release_group_id
+
+        # Get artist ID from the recording's artist credits
+        artist_credits = recording.get("artist-credit", [])
+        for credit in artist_credits:
+            if isinstance(credit, dict):
+                artist = credit.get("artist", {})
+                if isinstance(artist, dict) and artist.get("id"):
+                    artist_id = artist["id"]
                     break
 
-        if isinstance(tags, list) and tags:
-            valid_tags = [
-                tag for tag in tags
-                if isinstance(tag, dict) and tag.get("name")
-            ]
-
-            if valid_tags:
-                valid_tags.sort(
-                    key=lambda tag: int(tag.get("count", 0)),
-                    reverse=True
+        # 3. Fetch release-group tags, just like tagger.py
+        if release_group_id:
+            try:
+                rg_data = musicbrainz_request(
+                    musicbrainzngs.get_release_group_by_id,
+                    release_group_id,
+                    includes=["tags"]
                 )
 
-                return valid_tags[0]["name"]
+                rg_tags = rg_data.get("release-group", {}).get("tag-list", [])
+                if isinstance(rg_tags, list):
+                    raw_genres.extend(rg_tags)
 
-        # Fall back to existing file genre.
+            except Exception as e:
+                print(f"[MusicBrainz] Release-group genre lookup failed: {e}", flush=True)
+
+        # 4. Artist-level fallback, just like tagger.py
+        if not raw_genres and artist_id:
+            try:
+                artist_data = musicbrainz_request(
+                    musicbrainzngs.get_artist_by_id,
+                    artist_id,
+                    includes=["tags"]
+                )
+
+                artist_tags = artist_data.get("artist", {}).get("tag-list", [])
+                if isinstance(artist_tags, list):
+                    raw_genres.extend(artist_tags)
+
+            except Exception as e:
+                print(f"[MusicBrainz] Artist genre lookup failed: {e}", flush=True)
+
+        # 5. Score and rank genres using the same exclusions as tagger.py
+        genre_scores = {}
+
+        for tag in raw_genres:
+            name = str(tag.get("name", "")).lower().strip()
+
+            try:
+                count = int(tag.get("count", 1))
+            except (TypeError, ValueError):
+                count = 1
+
+            if not name or name in [
+                "rock", "pop", "american", "usa", "band", "male vocal"
+            ]:
+                continue
+
+            genre_scores[name] = genre_scores.get(name, 0) + count
+
+        sorted_genres = sorted(
+            genre_scores.items(),
+            key=lambda x: x[1],
+            reverse=True
+        )
+
+        if sorted_genres:
+            return "; ".join(
+                genre.title() for genre, score in sorted_genres[:3]
+            )
+
+        # 6. Existing file genre fallback
         try:
             existing_genre = get_id3_genre(path)
             if existing_genre:
@@ -912,13 +972,6 @@ def musicbrainz_suggestion_genre(path, recording):
         except Exception:
             pass
 
-        return "Rock"
-
-    except Exception as e:
-        print(
-            f"[MusicBrainz] Genre lookup failed: {e}",
-            flush=True
-        )
         return "Rock"
 
 def load_musicbrainz_cache():
@@ -1004,7 +1057,7 @@ def _get_musicbrainz_suggestions_unlocked(path):
             "error": "Could not create search query"
         }
 
-    cache_key = query.strip().lower() + "|genre-v4"
+    cache_key = query.strip().lower() + "|genre-v5"
 
     # Check persistent cache.
     with MB_CACHE_LOCK:
@@ -1149,7 +1202,7 @@ def get_musicbrainz_suggestions(path):
             "error": "Could not create search query"
         }
 
-    lock_key = query.strip().lower() + "|genre-v4"
+    lock_key = query.strip().lower() + "|genre-v5"
 
     with MB_SUGGESTION_LOCKS_GUARD:
         if lock_key not in MB_SUGGESTION_LOCKS:
