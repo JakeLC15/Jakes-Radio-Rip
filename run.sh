@@ -866,41 +866,43 @@ def musicbrainz_query_for_file(path):
         query = f'recording:"{title}"'
     return artist, title, query
 
-def musicbrainz_suggestion_genre(item, release, file_path=None):
-    """Use the file's verified genre for the same recording; otherwise use tags already in the search response.
+def musicbrainz_suggestion_genre(path, recording):
+    try:
+        if not isinstance(recording, dict):
+            return "Rock"
 
-    Do not issue one extra release-group/artist lookup per search result: a five-result
-    suggestion list should cost one MusicBrainz request, not six or more.
-    """
-    recording_id = str(item.get("id", "")).strip()
-    if file_path:
+        # Look for tags included in the recording response.
+        tags = recording.get("tags", [])
+
+        if isinstance(tags, list) and tags:
+            valid_tags = [
+                tag for tag in tags
+                if isinstance(tag, dict) and tag.get("name")
+            ]
+
+            if valid_tags:
+                valid_tags.sort(
+                    key=lambda tag: int(tag.get("count", 0)),
+                    reverse=True
+                )
+                return valid_tags[0].get("name", "Rock")
+
+        # Check existing file genre if available.
         try:
-            current_audio = ID3(file_path)
-            recording_frame = current_audio.get("TXXX:MusicBrainz Recording Id")
-            stored_recording_id = str(recording_frame.text[0]).strip() if recording_frame and recording_frame.text else ""
-            genre_frame = current_audio.get("TCON")
-            if recording_id and stored_recording_id == recording_id and genre_frame and genre_frame.text:
-                existing_genre = "; ".join(str(value).strip() for value in genre_frame.text if str(value).strip())
-                if existing_genre:
-                    return existing_genre
-        except Exception as exc:
-            print(f"⚠️ [Suggestions] Could not inspect existing ID3 genre: {exc}", flush=True)
+            existing_genre = get_id3_genre(path)
+            if existing_genre:
+                return existing_genre
+        except Exception:
+            pass
 
-    raw_genres = list(item.get("tags", []) or item.get("tag-list", []) or [])
-    raw_genres.extend(release.get("tags", []) or release.get("tag-list", []) or [])
-    genre_scores = {}
-    for tag in raw_genres:
-        name = str(tag.get("name", "")).lower().strip()
-        try:
-            count = int(tag.get("count", 1))
-        except (TypeError, ValueError):
-            count = 1
-        if not name or name in ["rock", "pop", "american", "usa", "band", "male vocal"]:
-            continue
-        genre_scores[name] = genre_scores.get(name, 0) + count
+        return "Rock"
 
-    sorted_genres = sorted(genre_scores.items(), key=lambda x: x[1], reverse=True)
-    return "; ".join(g[0].title() for g in sorted_genres[:3]) or "Rock"
+    except Exception as e:
+        print(
+            f"[MusicBrainz] Genre lookup failed: {e}",
+            flush=True
+        )
+        return "Rock"
 
 def load_musicbrainz_cache():
     try:
