@@ -2,7 +2,7 @@
 
 echo "========================================"
 echo "JAKE'S STATION RIPPER STARTING"
-echo "BUILD TEST: 2026-11-02-2"
+echo "BUILD TEST: 2026-11-02-3"
 echo "========================================"
 
 set -uo pipefail
@@ -870,58 +870,18 @@ def musicbrainz_request(function, *args, **kwargs):
             lock_file.flush()
             fcntl.flock(lock_file, fcntl.LOCK_UN)
             
-def musicbrainz_lookup_json(entity, entity_id, includes="tags"):
-    """Fetch one MusicBrainz entity lookup while sharing the tagger's API lock."""
-    if not entity_id:
-        return {}
-    params = urlencode({"inc": includes, "fmt": "json"})
-    request = urllib.request.Request(
-        f"https://musicbrainz.org/ws/2/{entity}/{entity_id}?{params}",
-        headers={"User-Agent": MB_USER_AGENT, "Accept": "application/json"},
-    )
-    with open(MB_REQUEST_LOCK_FILE, "a+") as lock_file:
-        fcntl.flock(lock_file, fcntl.LOCK_EX)
-        lock_file.seek(0)
-        try:
-            last_request = float(lock_file.read().strip() or "0")
-        except ValueError:
-            last_request = 0.0
-        wait = 2.0 - (time.time() - last_request)
-        if wait > 0:
-            time.sleep(wait)
-        try:
-            with urllib.request.urlopen(request, timeout=12) as response:
-                return json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            if exc.code == 503:
-                raise RuntimeError("MusicBrainz is rate limiting requests. Please try again later.")
-            raise RuntimeError(f"MusicBrainz lookup returned HTTP {exc.code}.")
-        except (urllib.error.URLError, TimeoutError) as exc:
-            raise RuntimeError(f"Could not reach MusicBrainz for genre details: {exc}")
-        finally:
-            lock_file.seek(0)
-            lock_file.truncate()
-            lock_file.write(str(time.time()))
-            lock_file.flush()
-            fcntl.flock(lock_file, fcntl.LOCK_UN)
-
 def musicbrainz_suggestion_genre(item, release, file_path=None):
-    """Use the file's already-verified genre for the same recording; otherwise mirror tagger.py."""
-    recording_id = str(item.get("id", "")).strip()
-    stored_recording_id = ""
-    stored_release_group_id = ""
+    """Use the file's verified genre for the same recording; otherwise use tags already in the search response.
 
-    # If this exact recording is already tagged, preserve the genre selected by tagger.py.
-    # This also avoids extra MusicBrainz requests for a file that already has correct metadata.
+    Do not issue one extra release-group/artist lookup per search result: a five-result
+    suggestion list should cost one MusicBrainz request, not six or more.
+    """
+    recording_id = str(item.get("id", "")).strip()
     if file_path:
         try:
             current_audio = ID3(file_path)
             recording_frame = current_audio.get("TXXX:MusicBrainz Recording Id")
-            if recording_frame and recording_frame.text:
-                stored_recording_id = str(recording_frame.text[0]).strip()
-            group_frame = current_audio.get("TXXX:MusicBrainz Release Group Id")
-            if group_frame and group_frame.text:
-                stored_release_group_id = str(group_frame.text[0]).strip()
+            stored_recording_id = str(recording_frame.text[0]).strip() if recording_frame and recording_frame.text else ""
             genre_frame = current_audio.get("TCON")
             if recording_id and stored_recording_id == recording_id and genre_frame and genre_frame.text:
                 existing_genre = "; ".join(str(value).strip() for value in genre_frame.text if str(value).strip())
@@ -932,33 +892,6 @@ def musicbrainz_suggestion_genre(item, release, file_path=None):
 
     raw_genres = list(item.get("tags", []) or item.get("tag-list", []) or [])
     raw_genres.extend(release.get("tags", []) or release.get("tag-list", []) or [])
-
-    credits = item.get("artist-credit", [])
-    artist_id = None
-    for credit in credits:
-        if isinstance(credit, dict) and isinstance(credit.get("artist"), dict):
-            artist_id = credit["artist"].get("id")
-            if artist_id:
-                break
-
-    release_group_id = stored_release_group_id or (release.get("release-group") or {}).get("id")
-    if release_group_id:
-        try:
-            group_data = musicbrainz_lookup_json("release-group", release_group_id, "tags")
-            group = group_data.get("release-group", {})
-            raw_genres.extend(group.get("tags", []) or group.get("tag-list", []) or [])
-        except Exception as exc:
-            print(f"⚠️ [Suggestions] Could not fetch release-group genres: {exc}", flush=True)
-
-    # Match tagger.py: only use artist tags if the recording/release/group had no tags.
-    if not raw_genres and artist_id:
-        try:
-            artist_data = musicbrainz_lookup_json("artist", artist_id, "tags")
-            artist = artist_data.get("artist", {})
-            raw_genres.extend(artist.get("tags", []) or artist.get("tag-list", []) or [])
-        except Exception as exc:
-            print(f"⚠️ [Suggestions] Could not fetch artist genres: {exc}", flush=True)
-
     genre_scores = {}
     for tag in raw_genres:
         name = str(tag.get("name", "")).lower().strip()
@@ -977,7 +910,7 @@ def get_musicbrainz_suggestions(path):
     global MB_LAST_REQUEST
     st = os.stat(path)
     artist, title, query = musicbrainz_query_for_file(path)
-    cache_key = f"{os.path.realpath(path)}|{st.st_size}|{st.st_mtime_ns}|{query}|genre-v3"
+    cache_key = f"{os.path.realpath(path)}|{st.st_size}|{st.st_mtime_ns}|{query}|genre-v4"
     with MB_CACHE_LOCK:
         try:
             with open(MB_CACHE_FILE, "r", encoding="utf-8") as f:
@@ -1009,15 +942,30 @@ def get_musicbrainz_suggestions(path):
             time.sleep(wait)
 
         try:
-            try:
-                with urllib.request.urlopen(request, timeout=12) as response:
-                    data = json.loads(response.read().decode("utf-8"))
-            except urllib.error.HTTPError as exc:
-                if exc.code == 503:
-                    raise RuntimeError("MusicBrainz is rate limiting requests. Please try again later.")
-                raise RuntimeError(f"MusicBrainz returned HTTP {exc.code}.")
-            except (urllib.error.URLError, TimeoutError) as exc:
-                raise RuntimeError(f"Could not reach MusicBrainz: {exc}")
+            data = None
+            for attempt in range(3):
+                try:
+                    with urllib.request.urlopen(request, timeout=12) as response:
+                        data = json.loads(response.read().decode("utf-8"))
+                    break
+                except urllib.error.HTTPError as exc:
+                    if exc.code != 503:
+                        raise RuntimeError(f"MusicBrainz returned HTTP {exc.code}.")
+                    if attempt >= 2:
+                        raise RuntimeError("MusicBrainz is temporarily rate limiting requests. Please wait a little and try again.")
+                    retry_after = exc.headers.get("Retry-After", "")
+                    try:
+                        backoff = max(2.0, min(30.0, float(retry_after))) if retry_after else (4.0 * (2 ** attempt))
+                    except ValueError:
+                        backoff = 4.0 * (2 ** attempt)
+                    print(f"⚠️ [Suggestions] MusicBrainz returned 503; retrying in {backoff:.0f}s.", flush=True)
+                    lock_file.seek(0)
+                    lock_file.truncate()
+                    lock_file.write(str(time.time()))
+                    lock_file.flush()
+                    time.sleep(backoff)
+                except (urllib.error.URLError, TimeoutError) as exc:
+                    raise RuntimeError(f"Could not reach MusicBrainz: {exc}")
         finally:
             lock_file.seek(0)
             lock_file.truncate()
@@ -1031,7 +979,7 @@ def get_musicbrainz_suggestions(path):
         artist_name = "".join(str(c.get("name", c.get("artist", {}).get("name", ""))) for c in credits if isinstance(c, dict))
         releases = item.get("releases", [])
         release = releases[0] if releases else {}
-        # Reuse this file's verified genre when the recording MBID matches; otherwise look up tags.
+        # Reuse this file's verified genre when the recording MBID matches; otherwise use tags returned by this search.
         genre = musicbrainz_suggestion_genre(item, release, path)
         suggestions.append({
             "id": item.get("id", ""),
@@ -1376,12 +1324,12 @@ async function saveFile(reset=false){
 loadFolder('',0);
 </script></body></html>"""
 
-# Large-folder MusicBrainz tag scans run in the background so the Ingress
-# request thread can return immediately. Per-file results are cached against
-# size + mtime, so unchanged MP3s are not repeatedly opened and parsed.
+# Large-folder MusicBrainz tag scans run in the background. Cache by filesystem
+# identity (device + inode) and metadata, not filename: renaming a track does not
+# invalidate its tag result. Only new/changed files need their ID3 tags reopened.
 MUSIC_TAG_SCAN_LOCK = Lock()
-MUSIC_TAG_FILE_CACHE = {}  # realpath -> (size, mtime_ns, has_musicbrainz)
-MUSIC_TAG_SCAN_STATE = {}  # folder -> {signature, running, scanned, tagged_names}
+MUSIC_TAG_FILE_CACHE = {}  # (device, inode) -> (size, mtime_ns, has_musicbrainz)
+MUSIC_TAG_SCAN_STATE = {}  # folder -> {signature, running, scanned, tagged_ids}
 
 def has_musicbrainz_tags(file_path):
     try:
@@ -1401,38 +1349,40 @@ def has_musicbrainz_tags(file_path):
 
 def start_music_tag_scan(folder, mp3_names):
     folder_key = os.path.realpath(folder)
-    signature_items = []
+    entries = []
     for name in mp3_names:
         path = os.path.join(folder_key, name)
         try:
             st = os.stat(path)
-            signature_items.append((name, st.st_size, st.st_mtime_ns))
+            identity = (st.st_dev, st.st_ino)
+            entries.append((name, identity, st.st_size, st.st_mtime_ns))
         except OSError:
             continue
-    signature = tuple(signature_items)
 
+    # Deliberately exclude names: a rename preserves device/inode/size/mtime.
+    signature = tuple(sorted((identity, size, mtime_ns) for _, identity, size, mtime_ns in entries))
     with MUSIC_TAG_SCAN_LOCK:
         state = MUSIC_TAG_SCAN_STATE.get(folder_key)
         if state and state.get("signature") == signature:
             return state
         state = {"signature": signature, "running": True, "scanned": 0,
-                 "total": len(signature), "tagged_names": set()}
+                 "total": len(entries), "tagged_ids": set()}
         MUSIC_TAG_SCAN_STATE[folder_key] = state
 
     def worker():
-        tagged_names = set()
-        for index, (name, size, mtime_ns) in enumerate(signature, 1):
+        tagged_ids = set()
+        for index, (name, identity, size, mtime_ns) in enumerate(entries, 1):
             path = os.path.join(folder_key, name)
             with MUSIC_TAG_SCAN_LOCK:
-                cached = MUSIC_TAG_FILE_CACHE.get(path)
+                cached = MUSIC_TAG_FILE_CACHE.get(identity)
             if cached and cached[0] == size and cached[1] == mtime_ns:
                 tagged = cached[2]
             else:
                 tagged = has_musicbrainz_tags(path)
                 with MUSIC_TAG_SCAN_LOCK:
-                    MUSIC_TAG_FILE_CACHE[path] = (size, mtime_ns, tagged)
+                    MUSIC_TAG_FILE_CACHE[identity] = (size, mtime_ns, tagged)
             if tagged:
-                tagged_names.add(name)
+                tagged_ids.add(identity)
             with MUSIC_TAG_SCAN_LOCK:
                 current = MUSIC_TAG_SCAN_STATE.get(folder_key)
                 if current is state:
@@ -1440,7 +1390,7 @@ def start_music_tag_scan(folder, mp3_names):
         with MUSIC_TAG_SCAN_LOCK:
             current = MUSIC_TAG_SCAN_STATE.get(folder_key)
             if current is state:
-                current["tagged_names"] = tagged_names
+                current["tagged_ids"] = tagged_ids
                 current["running"] = False
 
     Thread(target=worker, daemon=True, name="music-tag-folder-scan").start()
@@ -2431,15 +2381,22 @@ class IngressHandler(BaseHTTPRequestHandler):
                         scanning = bool(scan_state.get("running"))
                         scanned = int(scan_state.get("scanned", 0))
                         scan_total = int(scan_state.get("total", len(mp3_names)))
-                        tagged_names = set(scan_state.get("tagged_names", set()))
+                        tagged_ids = set(scan_state.get("tagged_ids", set()))
                     if scanning:
                         total = scan_total
                         page_names = []
                     else:
+                        current_ids = {}
+                        for current_name in mp3_names:
+                            try:
+                                current_stat = os.stat(os.path.join(folder, current_name))
+                                current_ids[current_name] = (current_stat.st_dev, current_stat.st_ino)
+                            except OSError:
+                                continue
                         if filter_mode == "tagged":
-                            matching_names = [name for name in mp3_names if name in tagged_names]
+                            matching_names = [name for name in mp3_names if current_ids.get(name) in tagged_ids]
                         else:
-                            matching_names = [name for name in mp3_names if name not in tagged_names]
+                            matching_names = [name for name in mp3_names if current_ids.get(name) not in tagged_ids]
                         total = len(matching_names)
                         page_names = matching_names[page * page_size:(page + 1) * page_size]
 
@@ -2449,7 +2406,7 @@ class IngressHandler(BaseHTTPRequestHandler):
                     if filter_mode == "both":
                         has_mb = has_musicbrainz_tags(file_path)
                     else:
-                        has_mb = name in tagged_names
+                        has_mb = current_ids.get(name) in tagged_ids
                     files.append({
                         "name": name,
                         "path": music_relative(file_path),
