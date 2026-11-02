@@ -932,7 +932,6 @@ def _get_musicbrainz_suggestions_unlocked(path):
 
     # Cache by the actual search query, not the MP3's path or modification time.
     cache_key = f"{query}|genre-v4"
-
     with MB_CACHE_LOCK:
         cache = load_musicbrainz_cache()
         entry = cache.get(cache_key)
@@ -945,7 +944,7 @@ def _get_musicbrainz_suggestions_unlocked(path):
                     "cached": True
                 }
 
-    print(f"[MusicBrainz] Searching: {query}", flush=True)
+    print(f"🔍 [MusicBrainz] Searching: {query}", flush=True)
     params = urllib.parse.urlencode({
         "query": query,
         "fmt": "json",
@@ -970,8 +969,21 @@ def _get_musicbrainz_suggestions_unlocked(path):
                         }
                     )
                     with urllib.request.urlopen(req, timeout=20) as response:
-                        data = json.loads(response.read().decode("utf-8"))
+                        raw_response = response.read().decode("utf-8", errors="replace")
 
+                    if not raw_response.strip():
+                        raise RuntimeError("MusicBrainz returned an empty response")
+
+                    try:
+                        data = json.loads(raw_response)
+                    except json.JSONDecodeError:
+                        raise RuntimeError(
+                            f"MusicBrainz returned invalid JSON: {raw_response[:300]}"
+                        )
+
+                    if not isinstance(data, dict):
+                        raise RuntimeError("MusicBrainz returned an unexpected response format")
+        
                     MUSICBRAINZ_LAST_REQUEST[0] = time.time()
                     break
 
