@@ -921,122 +921,139 @@ def musicbrainz_suggestion_genre(item, release, file_path=None):
     return "; ".join(g[0].title() for g in sorted_genres[:3]) or "Rock"
 
 def _get_musicbrainz_suggestions_unlocked(path):
-    global MB_LAST_REQUEST
-    st = os.stat(path)
-    artist, title, query = musicbrainz_query_for_file(path)
-    cache_key = f"{os.path.realpath(path)}|{st.st_size}|{st.st_mtime_ns}|{query}|genre-v4"
+    query = musicbrainz_query_for_file(path)
+    if not query:
+        return {
+            "query": "",
+            "suggestions": [],
+            "cached": False,
+            "error": "Could not build MusicBrainz search query"
+        }
+
+    # Cache by the actual search query, not the MP3's path or modification time.
+    cache_key = f"{query}|genre-v4"
+
     with MB_CACHE_LOCK:
-        try:
-            with open(MB_CACHE_FILE, "r", encoding="utf-8") as f:
-                cache = json.load(f)
-        except (OSError, ValueError):
-            cache = {}
-        cached = cache.get(cache_key)
-        if cached and time.time() - cached.get("time", 0) < MB_CACHE_TTL:
-            print(f"📦 [Suggestions] Cache used")
-            return {"cached": True, "query": query, "suggestions": cached.get("suggestions", [])}
-            
-    print(f"🔍 [Suggestions] Querying MusicBrainz")
-    params = urlencode({"query": query, "fmt": "json", "limit": 5, "inc": "tags+artist-credits+releases"})
-    request = urllib.request.Request(
-        "https://musicbrainz.org/ws/2/recording/?" + params,
-        headers={"User-Agent": MB_USER_AGENT, "Accept": "application/json"},
-    )
-    
-    with open(MB_REQUEST_LOCK_FILE, "a+") as lock_file:
-        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        cache = load_musicbrainz_cache()
+        entry = cache.get(cache_key)
+        if entry:
+            cached_at = entry.get("timestamp", 0)
+            if time.time() - cached_at < MB_CACHE_TTL:
+                return {
+                    "query": query,
+                    "suggestions": entry.get("suggestions", []),
+                    "cached": True
+                }
 
-        lock_file.seek(0)
-        try:
-            last_request = float(lock_file.read().strip() or "0")
-        except ValueError:
-            last_request = 0.0
+    print(f"[MusicBrainz] Searching: {query}", flush=True)
+    params = urllib.parse.urlencode({
+        "query": query,
+        "fmt": "json",
+        "limit": 5,
+        "inc": "tags+artist-credits+releases"
+    })
 
-        wait = 2.0 - (time.time() - last_request)
-        if wait > 0:
-            time.sleep(wait)
+    url = f"https://musicbrainz.org/ws/2/recording/?{params}"
+    try:
+        with MUSICBRAINZ_REQUEST_LOCK:
+            now = time.time()
+            wait = 2 - (now - MUSICBRAINZ_LAST_REQUEST[0])
+            if wait > 0:
+                time.sleep(wait)
 
-        try:
-            data = None
             for attempt in range(3):
                 try:
-                    with urllib.request.urlopen(request, timeout=12) as response:
+                    req = urllib.request.Request(
+                        url,
+                        headers={
+                            "User-Agent": MUSICBRAINZ_USER_AGENT
+                        }
+                    )
+                    with urllib.request.urlopen(req, timeout=20) as response:
                         data = json.loads(response.read().decode("utf-8"))
-                    break
-                except urllib.error.HTTPError as exc:
-                    if exc.code != 503:
-                        raise RuntimeError(f"MusicBrainz returned HTTP {exc.code}.")
-                    if attempt >= 2:
-                        raise RuntimeError("MusicBrainz is temporarily rate limiting requests. Please wait a little and try again.")
-                    retry_after = exc.headers.get("Retry-After", "")
-                    try:
-                        backoff = max(2.0, min(30.0, float(retry_after))) if retry_after else (4.0 * (2 ** attempt))
-                    except ValueError:
-                        backoff = 4.0 * (2 ** attempt)
-                    print(f"⚠️ [Suggestions] MusicBrainz returned 503; retrying in {backoff:.0f}s.", flush=True)
-                    lock_file.seek(0)
-                    lock_file.truncate()
-                    lock_file.write(str(time.time()))
-                    lock_file.flush()
-                    time.sleep(backoff)
-                except (urllib.error.URLError, TimeoutError) as exc:
-                    raise RuntimeError(f"Could not reach MusicBrainz: {exc}")
-        finally:
-            lock_file.seek(0)
-            lock_file.truncate()
-            lock_file.write(str(time.time()))
-            lock_file.flush()
-            fcntl.flock(lock_file, fcntl.LOCK_UN)
-            
-    suggestions = []
-    for item in data.get("recordings", []):
-        credits = item.get("""artist-credit""", [])
-        artist_name = "".join(str(c.get("name", c.get("artist", {}).get("name", ""))) for c in credits if isinstance(c, dict))
-        releases = item.get("releases", [])
-        release = releases[0] if releases else {}
-        # Reuse this file's verified genre when the recording MBID matches; otherwise use tags returned by this search.
-        genre = musicbrainz_suggestion_genre(item, release, path)
-        suggestions.append({
-            "id": item.get("id", ""),
-            "title": item.get("title", ""),
-            "artist": artist_name or artist,
-            "album": release.get("title", ""),
-            "date": release.get("date", "")[:4],
-            "genre": genre,
-            "score": item.get("score", 0),
-            "length": item.get("length", 0),
-        })
-    with MB_CACHE_LOCK:
-        try:
-            with open(MB_CACHE_FILE, "r", encoding="utf-8") as f:
-                cache = json.load(f)
-        except (OSError, ValueError):
-            cache = {}
-        cache[cache_key] = {"time": time.time(), "suggestions": suggestions}
-        try:
-            tmp = MB_CACHE_FILE + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(cache, f)
-            os.replace(tmp, MB_CACHE_FILE)
-        except OSError:
-            pass
-    return {"cached": False, "query": query, "suggestions": suggestions}
 
+                    MUSICBRAINZ_LAST_REQUEST[0] = time.time()
+                    break
+
+                except urllib.error.HTTPError as e:
+                    MUSICBRAINZ_LAST_REQUEST[0] = time.time()
+                    if e.code == 503 and attempt < 2:
+                        retry_after = e.headers.get("Retry-After")
+                        delay = int(retry_after) if retry_after else (4 * (2 ** attempt))
+                        time.sleep(delay)
+                        continue
+
+                    raise
+
+        suggestions = []
+        for recording in data.get("recordings", [])[:5]:
+            artist_credit = recording.get("artist-credit", [])
+            artist = "".join(
+                item.get("name", "")
+                if isinstance(item, dict)
+                else item
+                for item in artist_credit
+            )
+
+            releases = recording.get("releases", [])
+            release = releases[0].get("title", "") if releases else ""
+
+            suggestions.append({
+                "id": recording.get("id", ""),
+                "title": recording.get("title", ""),
+                "artist": artist,
+                "release": release,
+                "genre": musicbrainz_suggestion_genre(path, recording)
+            })
+
+        with MB_CACHE_LOCK:
+            cache = load_musicbrainz_cache()
+            cache[cache_key] = {
+                "timestamp": time.time(),
+                "suggestions": suggestions
+            }
+            save_musicbrainz_cache(cache)
+
+        return {
+            "query": query,
+            "suggestions": suggestions,
+            "cached": False
+        }
+
+    except Exception as e:
+        print(f"[MusicBrainz] Search failed: {e}", flush=True)
+        return {
+            "query": query,
+            "suggestions": [],
+            "cached": False,
+            "error": str(e)
+        }
 
 # If the browser sends duplicate suggestion requests for the same file, make
 # them share one lookup instead of serially querying MusicBrainz twice.
 MB_SUGGESTION_LOCKS = {}
 MB_SUGGESTION_LOCKS_GUARD = Lock()
-def get_musicbrainz_suggestions(path):
-    st = os.stat(path)
-    _, _, query = musicbrainz_query_for_file(path)
-    key = f"{os.path.realpath(path)}|{st.st_size}|{st.st_mtime_ns}|{query}|genre-v4"
-    with MB_SUGGESTION_LOCKS_GUARD:
-        request_lock = MB_SUGGESTION_LOCKS.setdefault(key, Lock())
-    with request_lock:
-        # The inner function checks the persistent cache again after waiting.
-        return _get_musicbrainz_suggestions_unlocked(path)
 
+def get_musicbrainz_suggestions(path):
+    query = musicbrainz_query_for_file(path)
+    if not query:
+        return {
+            "query": "",
+            "suggestions": [],
+            "cached": False,
+            "error": "Could not build MusicBrainz search query"
+        }
+    # All files with the same search query share one lock.
+    lock_key = f"{query}|genre-v4"
+    with MB_SUGGESTION_LOCKS_GUARD:
+        if lock_key not in MB_SUGGESTION_LOCKS:
+            MB_SUGGESTION_LOCKS[lock_key] = Lock()
+        request_lock = MB_SUGGESTION_LOCKS[lock_key]
+    with request_lock:
+        # Re-check the persistent cache after acquiring the lock.
+        # Another request may already have populated it.
+        return _get_musicbrainz_suggestions_unlocked(path)
+        
 def music_editor_page():
     return """<!DOCTYPE html>
 <html style="background:#111;color:#eee"><head>
