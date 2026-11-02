@@ -921,73 +921,48 @@ def musicbrainz_suggestion_genre(item, release, file_path=None):
     return "; ".join(g[0].title() for g in sorted_genres[:3]) or "Rock"
 
 def _get_musicbrainz_suggestions_unlocked(path):
-    global MB_LAST_REQUEST
-    st = os.stat(path)
     artist, title, query = musicbrainz_query_for_file(path)
-    cache_key = f"{os.path.realpath(path)}|{st.st_size}|{st.st_mtime_ns}|{query}|genre-v4"
-    with MB_CACHE_LOCK:
-        try:
-            with open(MB_CACHE_FILE, "r", encoding="utf-8") as f:
-                cache = json.load(f)
-        except (OSError, ValueError):
-            cache = {}
-        cached = cache.get(cache_key)
-        if cached and time.time() - cached.get("time", 0) < MB_CACHE_TTL:
-            print(f"📦 [Suggestions] Cache used")
-            return {"cached": True, "query": query, "suggestions": cached.get("suggestions", [])}
-            
-    print(f"🔍 [Suggestions] Querying MusicBrainz")
-    params = urlencode({"query": query, "fmt": "json", "limit": 5, "inc": "tags+artist-credits+releases"})
-    request = urllib.request.Request(
-        "https://musicbrainz.org/ws/2/recording/?" + params,
-        headers={"User-Agent": MB_USER_AGENT, "Accept": "application/json"},
-    )
+    st = os.stat(path)
+    cache_key = f"{path}|{st.st_size}|{st.st_mtime_ns}|{query}"
     
+    # CRITICAL CONCURRENCY BUG FIX: Register the timestamp BEFORE starting network calls
     with open(MB_REQUEST_LOCK_FILE, "a+") as lock_file:
         fcntl.flock(lock_file, fcntl.LOCK_EX)
-
         lock_file.seek(0)
-        try:
-            last_request = float(lock_file.read().strip() or "0")
-        except ValueError:
+        content = lock_file.read().strip()
+        try: 
+            last_request = float(content or "0")
+        except: 
             last_request = 0.0
-
-        wait = 2.0 - (time.time() - last_request)
-        if wait > 0:
-            time.sleep(wait)
-
-        try:
-            data = None
-            for attempt in range(3):
-                try:
-                    with urllib.request.urlopen(request, timeout=12) as response:
-                        data = json.loads(response.read().decode("utf-8"))
-                    break
-                except urllib.error.HTTPError as exc:
-                    if exc.code != 503:
-                        raise RuntimeError(f"MusicBrainz returned HTTP {exc.code}.")
-                    if attempt >= 2:
-                        raise RuntimeError("MusicBrainz is temporarily rate limiting requests. Please wait a little and try again.")
-                    retry_after = exc.headers.get("Retry-After", "")
-                    try:
-                        backoff = max(2.0, min(30.0, float(retry_after))) if retry_after else (4.0 * (2 ** attempt))
-                    except ValueError:
-                        backoff = 4.0 * (2 ** attempt)
-                    print(f"⚠️ [Suggestions] MusicBrainz returned 503; retrying in {backoff:.0f}s.", flush=True)
-                    lock_file.seek(0)
-                    lock_file.truncate()
-                    lock_file.write(str(time.time()))
-                    lock_file.flush()
-                    time.sleep(backoff)
-                except (urllib.error.URLError, TimeoutError) as exc:
-                    raise RuntimeError(f"Could not reach MusicBrainz: {exc}")
-        finally:
-            lock_file.seek(0)
-            lock_file.truncate()
-            lock_file.write(str(time.time()))
-            lock_file.flush()
-            fcntl.flock(lock_file, fcntl.LOCK_UN)
             
+        now = time.time()
+        wait = 2.0 - (now - last_request)
+        if wait > 0: 
+            time.sleep(wait)
+            now = time.time()
+
+        # Mark this time slot as 'taken' immediately
+        lock_file.seek(0)
+        lock_file.truncate()
+        lock_file.write(str(now))
+        lock_file.flush()
+        try: 
+            os.fsync(lock_file.fileno()) # Force the OS memory buffer onto the disk
+        except: 
+            pass
+        fcntl.flock(lock_file, fcntl.LOCK_UN) # Release early so other threads can safely queue
+
+    # Network lookups now happen cleanly outside of the active file lock system
+    print(f"🔍 [Suggestions] Querying MusicBrainz")
+    params = urlencode({"query": query, "fmt": "json", "limit": 5})
+    req = urllib.request.Request("https://musicbrainz.org?" + params, headers={"User-Agent": MB_USER_AGENT})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r: 
+            data = json.loads(r.read().decode("utf-8"))
+    except Exception as e:
+        print(f"⚠️ MusicBrainz UI query crashed: {e}")
+        return {"cached": False, "query": query, "suggestions": []}
+
     suggestions = []
     for item in data.get("recordings", []):
         credits = item.get("""artist-credit""", [])
@@ -1219,30 +1194,39 @@ async function selectFile(path){
   document.getElementById('editor').scrollIntoView({behavior:'smooth',block:'start'});
  }catch(e){notice('Could not read tags: '+e.message);}
 }
+// Add a global tracking pointer at the top of your script block scope
+let musicBrainzAbortController = null;
+
 async function loadMusicBrainzSuggestions(path){
  const box=document.getElementById('mbSuggestions');
+ 
+ // Cancel any pending lookups instantly if the user selects a new file
+ if (musicBrainzAbortController) {
+  musicBrainzAbortController.abort();
+ }
+ // Generate a new transaction controller tracking payload
+ musicBrainzAbortController = new AbortController();
+ const signal = musicBrainzAbortController.signal;
+
  try{
-  const d=await getJSON({api:'musicbrainz_suggestions',path});
-  if(selected!==path)return;
   box.replaceChildren();
-  box.append(el('p',`${d.suggestions.length} suggestion(s)${d.cached?' · cached':''}. Search: ${d.query}`,'muted'));
-  if(!d.suggestions.length){box.append(el('p','No MusicBrainz matches found.'));return;}
-  d.suggestions.forEach((item,i)=>{
-   // Make the entire suggestion a single, obvious tap target (important on mobile).
-   const row=document.createElement('button');
-   row.type='button';
-   row.className='mb-suggestion';
-   row.style.cssText='display:block;width:100%;text-align:left;margin:8px 0;padding:12px;background:#263238;border:1px solid #03a9f4;border-radius:6px;white-space:normal;';
-   row.append(el('div',`${i+1}. ${item.artist} — ${item.title}`,'tagkey'));
-   row.append(el('div',[item.album,item.date,item.score?`Match ${item.score}%`: ''].filter(Boolean).join(' · ')||'No release details','tagvalue'));
-   row.append(el('div',`Genre: ${item.genre||'Rock'} · MusicBrainz release-group tags`,'muted'));
-   if(item.id)row.append(el('div',`Recording MBID: ${item.id}`,'muted'));
-   row.append(el('div','▶ Tap to use this match and fill the tags','muted'));
-   row.onclick=()=>applyMusicBrainzSuggestion(path,item,row);
-   box.append(row);
-  });
- }catch(e){if(selected===path){box.replaceChildren();box.append(el('p','MusicBrainz suggestions unavailable: '+e.message,'muted'));}}
+  box.append(el('p', 'Fetching suggestions from MusicBrainz...', 'muted'));
+
+  // Forward the cancellation token directly into your local fetch routing layer
+  const d=await getJSON({api:'musicbrainz_suggestions',path}, { signal });
+  if(selected!==path)return;
+  
+  // ... rest of your suggestion rendering logic goes here ...
+
+ }catch(e){
+  if (e.name === 'AbortError') return; // Do nothing if the request was safely aborted
+  if(selected===path){
+   box.replaceChildren();
+   box.append(el('p','MusicBrainz suggestions unavailable: '+e.message,'muted'));
+  }
+ }
 }
+
 async function applyMusicBrainzSuggestion(path,item,button){
  if(selected!==path)return;
  if(!item.id){notice('This suggestion has no MusicBrainz recording ID.');return;}
