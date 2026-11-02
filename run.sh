@@ -1069,10 +1069,12 @@ def _get_musicbrainz_suggestions_unlocked(path):
 
             release = ""
             release_date = ""
+            release_country = ""
+            release_format = ""
 
-            if releases:
+            if releases and isinstance(releases[0], dict):
                 first_release = releases[0]
-
+            
                 if isinstance(first_release, dict):
                     release = first_release.get("title", "")
                     release_date = first_release.get("date", "")
@@ -1089,6 +1091,8 @@ def _get_musicbrainz_suggestions_unlocked(path):
                 "artist": artist,
                 "release": release,
                 "release_date": release_date,
+                "release_country": release_country,
+                "release_format": release_format,
                 "genre": musicbrainz_suggestion_genre(
                     path, recording
                 )
@@ -1336,7 +1340,13 @@ async function loadMusicBrainzSuggestions(path){
    row.className='mb-suggestion';
    row.style.cssText='display:block;width:100%;text-align:left;margin:8px 0;padding:12px;background:#263238;border:1px solid #03a9f4;border-radius:6px;white-space:normal;';
    row.append(el('div',`${i+1}. ${item.artist} — ${item.title}`,'tagkey'));
-   row.append(el('div',[item.album,item.date,item.score?`Match ${item.score}%`: ''].filter(Boolean).join(' · ')||'No release details','tagvalue'));
+   row.append(el('div',[
+       item.release,
+       item.release_date ? item.release_date.substring(0,4) : '',
+       item.release_country,
+       item.release_format,
+       item.score ? `Match ${item.score}%` : ''
+   ].filter(Boolean).join(' · ') || 'No release details','tagvalue'));
    row.append(el('div',`Genre: ${item.genre||'Rock'} · MusicBrainz release-group tags`,'muted'));
    if(item.id)row.append(el('div',`Recording MBID: ${item.id}`,'muted'));
    row.append(el('div','▶ Tap to use this match and fill the tags','muted'));
