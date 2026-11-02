@@ -5,8 +5,11 @@ import fcntl
 import musicbrainzngs
 from mutagen.id3 import ID3, TIT2, TPE1, TALB, TCON, TRCK, TDRC, TPE2, TXXX
 
-musicbrainzngs.set_useragent("JakesStationRipper, 2026.11, https://github.com/JakeLC15/Jakes-Radio-Rip")
-
+musicbrainzngs.set_useragent(
+    "JakesStationRipper",
+    "2026.11",
+    "https://github.com/JakeLC15/Jakes-Radio-Rip"
+)
 def musicbrainz_request(function, *args, **kwargs):
     lock_file_path = "/tmp/musicbrainz_api.lock"
 
