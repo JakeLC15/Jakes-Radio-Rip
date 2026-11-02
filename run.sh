@@ -1151,8 +1151,10 @@ function stopFolderRefresh() {
 }
 
 function changeFilter(value) {
+ // The list already carries a tagged/untagged marker on every visible row.
+ // Filtering is purely presentational: never call the API or start a scan.
  currentFilter = value;
- loadFolder(currentDir, 0);
+ applyFilter(value);
 }
 
 function applyFilter(value) {
@@ -1393,26 +1395,46 @@ def start_music_tag_scan(folder, mp3_names):
         return state
 
     def worker():
-        for name, identity, size, mtime_ns in pending:
+        for name, identity, original_size, original_mtime_ns in pending:
             path = os.path.join(folder_key, name)
-            try:
-                tagged = has_musicbrainz_tags(path)
-                # Don't cache a result if the file changed while it was read.
-                st = os.stat(path)
-                if ((st.st_dev, st.st_ino) != identity or
-                        st.st_size != size or st.st_mtime_ns != mtime_ns):
-                    tagged = None
-            except OSError:
-                tagged = None
+            result = None
+            final_size = original_size
+            final_mtime_ns = original_mtime_ns
+
+            # Save & Reset and the watcher/tagger can both write the same MP3.
+            # Retry briefly when metadata changes during a read instead of
+            # completing the scan without a cache entry (which caused endless
+            # rescans on subsequent UI polls).
+            for attempt in range(6):
+                try:
+                    before = os.stat(path)
+                    if (before.st_dev, before.st_ino) != identity:
+                        break
+                    before_meta = (before.st_size, before.st_mtime_ns)
+                    tagged = has_musicbrainz_tags(path)
+                    after = os.stat(path)
+                    if ((after.st_dev, after.st_ino) == identity and
+                            (after.st_size, after.st_mtime_ns) == before_meta):
+                        result = tagged
+                        final_size, final_mtime_ns = before_meta
+                        break
+                    # File is still being rewritten; wait and inspect its
+                    # latest version on the next pass.
+                    final_size, final_mtime_ns = after.st_size, after.st_mtime_ns
+                    time.sleep(0.5 if attempt < 3 else 1.0)
+                except OSError:
+                    time.sleep(0.5)
 
             with MUSIC_TAG_SCAN_LOCK:
                 current = MUSIC_TAG_SCAN_STATE.get(folder_key)
                 if current is not state:
                     return
-                if tagged is not None:
-                    MUSIC_TAG_FILE_CACHE[identity] = (size, mtime_ns, tagged)
-                    if tagged:
+                if result is not None:
+                    MUSIC_TAG_FILE_CACHE[identity] = (final_size, final_mtime_ns, result)
+                    if result:
                         current["tagged_ids"].add(identity)
+                    else:
+                        current["tagged_ids"].discard(identity)
                 current["scanned"] += 1
 
         with MUSIC_TAG_SCAN_LOCK:
@@ -2393,47 +2415,19 @@ class IngressHandler(BaseHTTPRequestHandler):
                 if filter_mode not in ("both", "tagged", "untagged"):
                     filter_mode = "both"
 
-                # Filtered views scan the folder asynchronously. The browser
-                # receives progress immediately instead of waiting while hundreds
-                # of ID3 files are opened on the request thread.
+                # Always return the normal page with its existing tagged checkmarks.
+                # Tagged/Untagged is a browser-side visibility filter only; changing
+                # it must never trigger a folder scan or another ID3 read.
+                total = len(mp3_names)
+                page_names = mp3_names[page * page_size:(page + 1) * page_size]
                 scanning = False
-                scanned = 0
-                scan_total = len(mp3_names)
-                if filter_mode == "both":
-                    total = len(mp3_names)
-                    page_names = mp3_names[page * page_size:(page + 1) * page_size]
-                else:
-                    scan_state = start_music_tag_scan(folder, mp3_names)
-                    with MUSIC_TAG_SCAN_LOCK:
-                        scanning = bool(scan_state.get("running"))
-                        scanned = int(scan_state.get("scanned", 0))
-                        scan_total = int(scan_state.get("total", len(mp3_names)))
-                        tagged_ids = set(scan_state.get("tagged_ids", set()))
-                    if scanning:
-                        total = scan_total
-                        page_names = []
-                    else:
-                        current_ids = {}
-                        for current_name in mp3_names:
-                            try:
-                                current_stat = os.stat(os.path.join(folder, current_name))
-                                current_ids[current_name] = (current_stat.st_dev, current_stat.st_ino)
-                            except OSError:
-                                continue
-                        if filter_mode == "tagged":
-                            matching_names = [name for name in mp3_names if current_ids.get(name) in tagged_ids]
-                        else:
-                            matching_names = [name for name in mp3_names if current_ids.get(name) not in tagged_ids]
-                        total = len(matching_names)
-                        page_names = matching_names[page * page_size:(page + 1) * page_size]
+                scanned = total
+                scan_total = total
 
                 files = []
                 for name in page_names:
                     file_path = os.path.join(folder, name)
-                    if filter_mode == "both":
-                        has_mb = has_musicbrainz_tags(file_path)
-                    else:
-                        has_mb = current_ids.get(name) in tagged_ids
+                    has_mb = has_musicbrainz_tags(file_path)
                     files.append({
                         "name": name,
                         "path": music_relative(file_path),
