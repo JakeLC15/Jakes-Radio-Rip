@@ -850,16 +850,12 @@ MB_CACHE_TTL = 30 * 24 * 60 * 60
 MB_USER_AGENT = "JakesStationRipper/2026.11 (https://github.com/JakeLC15/Jakes-Radio-Rip)"
 
 def musicbrainz_query_for_file(path):
-    name = os.path.splitext(os.path.basename(path))[0]
-    # Common ripper naming convention: Artist - Track. Otherwise search title only.
+    # FIX: Correctly unpack splitext into a standard string variable
+    name, _ = os.path.splitext(os.path.basename(path))
     parts = re.split(r"\s+-\s+", name, maxsplit=1)
     if len(parts) == 2 and parts[0].strip() and parts[1].strip():
-        artist, title = parts[0].strip(), parts[1].strip()
-        query = f'recording:"{title}" AND artist:"{artist}"'
-    else:
-        artist, title = "", name.strip()
-        query = f'recording:"{title}"'
-    return artist, title, query
+        return parts[0].strip(), parts[1].strip(), f'recording:"{parts[1].strip()}" AND artist:"{parts[0].strip()}"'
+    return "", name.strip(), f'recording:"{name.strip()}"'
 
 def musicbrainz_request(function, *args, **kwargs):
     with open(MB_REQUEST_LOCK_FILE, "a+") as lock_file:
@@ -919,57 +915,88 @@ def musicbrainz_suggestion_genre(item, release, file_path=None):
 
     sorted_genres = sorted(genre_scores.items(), key=lambda x: x[1], reverse=True)
     return "; ".join(g[0].title() for g in sorted_genres[:3]) or "Rock"
-
 def _get_musicbrainz_suggestions_unlocked(path):
-    artist, title, query = musicbrainz_query_for_file(path)
+    global MB_LAST_REQUEST
     st = os.stat(path)
-    cache_key = f"{path}|{st.st_size}|{st.st_mtime_ns}|{query}"
+    artist, title, query = musicbrainz_query_for_file(path)
+    cache_key = f"{os.path.realpath(path)}|{st.st_size}|{st.st_mtime_ns}|{query}|genre-v4"
     
-    # CRITICAL CONCURRENCY BUG FIX: Register the timestamp BEFORE starting network calls
+    with MB_CACHE_LOCK:
+        try:
+            with open(MB_CACHE_FILE, "r", encoding="utf-8") as f:
+                cache = json.load(f)
+        except (OSError, ValueError):
+            cache = {}
+        cached = cache.get(cache_key)
+        if cached and time.time() - cached.get("time", 0) < MB_CACHE_TTL:
+            print(f"📦 [Suggestions] Cache used")
+            return {"cached": True, "query": query, "suggestions": cached.get("suggestions", [])}
+            
+    print(f"🔍 [Suggestions] Querying MusicBrainz")
+    params = urlencode({"query": query, "fmt": "json", "limit": 5, "inc": "tags+artist-credits+releases"})
+    request = urllib.request.Request(
+        "https://musicbrainz.org?" + params,
+        headers={"User-Agent": MB_USER_AGENT, "Accept": "application/json"},
+    )
+    
+    # Pre-flight rate limit stamp (Runs inside lock, before web connection blocks)
     with open(MB_REQUEST_LOCK_FILE, "a+") as lock_file:
         fcntl.flock(lock_file, fcntl.LOCK_EX)
         lock_file.seek(0)
         content = lock_file.read().strip()
-        try: 
+        try:
             last_request = float(content or "0")
-        except: 
+        except ValueError:
             last_request = 0.0
-            
+
         now = time.time()
         wait = 2.0 - (now - last_request)
-        if wait > 0: 
+        if wait > 0:
             time.sleep(wait)
             now = time.time()
 
-        # Mark this time slot as 'taken' immediately
         lock_file.seek(0)
         lock_file.truncate()
         lock_file.write(str(now))
         lock_file.flush()
-        try: 
-            os.fsync(lock_file.fileno()) # Force the OS memory buffer onto the disk
-        except: 
+        try:
+            os.fsync(lock_file.fileno())
+        except OSError:
             pass
-        fcntl.flock(lock_file, fcntl.LOCK_UN) # Release early so other threads can safely queue
+        fcntl.flock(lock_file, fcntl.LOCK_UN)
+            
+    # Web networking executes smoothly outside the disk-write block
+    data = None
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(request, timeout=12) as response:
+                data = json.loads(response.read().decode("utf-8"))
+            break
+        except urllib.error.HTTPError as exc:
+            if exc.code != 503:
+                raise RuntimeError(f"MusicBrainz returned HTTP {exc.code}.")
+            if attempt >= 2:
+                raise RuntimeError("MusicBrainz is temporarily rate limiting requests.")
+            retry_after = exc.headers.get("Retry-After", "")
+            try:
+                backoff = max(2.0, min(30.0, float(retry_after))) if retry_after else (4.0 * (2 ** attempt))
+            except ValueError:
+                backoff = 4.0 * (2 ** attempt)
+            print(f"⚠️ [Suggestions] MusicBrainz returned 503; retrying in {backoff:.0f}s.", flush=True)
+            time.sleep(backoff)
+        except (urllib.error.URLError, TimeoutError) as exc:
+            raise RuntimeError(f"Could not reach MusicBrainz: {exc}")
 
-    # Network lookups now happen cleanly outside of the active file lock system
-    print(f"🔍 [Suggestions] Querying MusicBrainz")
-    params = urlencode({"query": query, "fmt": "json", "limit": 5})
-    req = urllib.request.Request("https://musicbrainz.org?" + params, headers={"User-Agent": MB_USER_AGENT})
-    try:
-        with urllib.request.urlopen(req, timeout=10) as r: 
-            data = json.loads(r.read().decode("utf-8"))
-    except Exception as e:
-        print(f"⚠️ MusicBrainz UI query crashed: {e}")
-        return {"cached": False, "query": query, "suggestions": []}
+    if not data:
+        raise RuntimeError("Failed to collect metadata from MusicBrainz.")
 
+    # data parsing loop
     suggestions = []
     for item in data.get("recordings", []):
-        credits = item.get("""artist-credit""", [])
+        credits = item.get("artist-credit", [])
         artist_name = "".join(str(c.get("name", c.get("artist", {}).get("name", ""))) for c in credits if isinstance(c, dict))
         releases = item.get("releases", [])
         release = releases[0] if releases else {}
-        # Reuse this file's verified genre when the recording MBID matches; otherwise use tags returned by this search.
         genre = musicbrainz_suggestion_genre(item, release, path)
         suggestions.append({
             "id": item.get("id", ""),
@@ -981,6 +1008,8 @@ def _get_musicbrainz_suggestions_unlocked(path):
             "score": item.get("score", 0),
             "length": item.get("length", 0),
         })
+
+    # Your cache persistence layer
     with MB_CACHE_LOCK:
         try:
             with open(MB_CACHE_FILE, "r", encoding="utf-8") as f:
@@ -995,8 +1024,8 @@ def _get_musicbrainz_suggestions_unlocked(path):
             os.replace(tmp, MB_CACHE_FILE)
         except OSError:
             pass
-    return {"cached": False, "query": query, "suggestions": suggestions}
 
+    return {"cached": False, "query": query, "suggestions": suggestions}
 
 # If the browser sends duplicate suggestion requests for the same file, make
 # them share one lookup instead of serially querying MusicBrainz twice.
@@ -1054,7 +1083,7 @@ const basePath=window.location.pathname;
 let currentDir='', page=0, selected='', currentFilter='both';
 function apiUrl(params){return basePath+'?'+new URLSearchParams(params).toString();}
 function notice(msg){const n=document.getElementById('notice');n.hidden=false;n.textContent=msg;}
-async function getJSON(params){const r=await fetch(apiUrl(params),{credentials:'same-origin'});const j=await r.json();if(!r.ok||j.error)throw new Error(j.error||('HTTP '+r.status));return j;}
+async function getJSON(params, options = {}){const r=await fetch(apiUrl(params),{credentials:'same-origin'});const j=await r.json();if(!r.ok||j.error)throw new Error(j.error||('HTTP '+r.status));return j;}
 function el(tag, text, cls){const x=document.createElement(tag);x.textContent=text;if(cls)x.className=cls;return x;}
 async function loadFolder(dir='',p=0){
  currentDir=dir;page=p;document.getElementById('folders').replaceChildren();document.getElementById('songs').replaceChildren();document.getElementById('pager').replaceChildren();
