@@ -1022,9 +1022,37 @@ def _get_musicbrainz_suggestions_unlocked(path):
     try:
         data = musicbrainz_request(url)
 
+        # Accept either a parsed dictionary or raw JSON text.
+        if isinstance(data, str):
+            data = json.loads(data)
+
+        if not isinstance(data, dict):
+            raise RuntimeError(
+                f"Unexpected MusicBrainz response type: {type(data).__name__}"
+            )
+
+        if "recordings" not in data:
+            raise RuntimeError(
+                f"MusicBrainz response missing recordings. "
+                f"Keys: {list(data.keys())}"
+            )
+
         suggestions = []
 
-        for recording in data.get("recordings", [])[:5]:
+        recordings = data.get("recordings", [])
+
+        print(
+            f"[MusicBrainz] Received {len(recordings)} recordings",
+            flush=True
+        )
+
+        for recording in recordings[:5]:
+            if not isinstance(recording, dict):
+                print(
+                    f"[MusicBrainz] Skipping unexpected result: {type(recording).__name__}",
+                    flush=True
+                )
+                continue
             artist_credit = recording.get("artist-credit", [])
 
             artist = "".join(
