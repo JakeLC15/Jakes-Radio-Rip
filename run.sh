@@ -852,7 +852,7 @@ MB_SUGGESTION_LOCKS = {}
 
 MUSICBRAINZ_REQUEST_LOCK = threading.Lock()
 MUSICBRAINZ_LAST_REQUEST = [0]
-MB_USER_AGENT = "JakesStationRipper/2026.11 (https://github.com/JakeLC15/Jakes-Radio-Rip)"
+MUSICBRAINZ_USER_AGENT = "JakesStationRipper/2026.11 (https://github.com/JakeLC15/Jakes-Radio-Rip)"
 
 def musicbrainz_query_for_file(path):
     name = os.path.splitext(os.path.basename(path))[0]
