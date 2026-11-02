@@ -2,7 +2,7 @@
 
 echo "========================================"
 echo "JAKE'S STATION RIPPER STARTING"
-echo "BUILD TEST: 2026-11-01-4"
+echo "BUILD TEST: 2026-11-02-1"
 echo "========================================"
 
 set -uo pipefail
@@ -870,11 +870,91 @@ def musicbrainz_request(function, *args, **kwargs):
             lock_file.flush()
             fcntl.flock(lock_file, fcntl.LOCK_UN)
             
+def musicbrainz_lookup_json(entity, entity_id, includes="tags"):
+    """Fetch one MusicBrainz entity lookup while sharing the tagger's API lock."""
+    if not entity_id:
+        return {}
+    params = urlencode({"inc": includes, "fmt": "json"})
+    request = urllib.request.Request(
+        f"https://musicbrainz.org/ws/2/{entity}/{entity_id}?{params}",
+        headers={"User-Agent": MB_USER_AGENT, "Accept": "application/json"},
+    )
+    with open(MB_REQUEST_LOCK_FILE, "a+") as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        lock_file.seek(0)
+        try:
+            last_request = float(lock_file.read().strip() or "0")
+        except ValueError:
+            last_request = 0.0
+        wait = 2.0 - (time.time() - last_request)
+        if wait > 0:
+            time.sleep(wait)
+        try:
+            with urllib.request.urlopen(request, timeout=12) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            if exc.code == 503:
+                raise RuntimeError("MusicBrainz is rate limiting requests. Please try again later.")
+            raise RuntimeError(f"MusicBrainz lookup returned HTTP {exc.code}.")
+        except (urllib.error.URLError, TimeoutError) as exc:
+            raise RuntimeError(f"Could not reach MusicBrainz for genre details: {exc}")
+        finally:
+            lock_file.seek(0)
+            lock_file.truncate()
+            lock_file.write(str(time.time()))
+            lock_file.flush()
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+def musicbrainz_suggestion_genre(item, release):
+    """Mirror tagger.py's recording + release + release-group + artist genre harvest."""
+    raw_genres = list(item.get("tags", []) or item.get("tag-list", []) or [])
+    raw_genres.extend(release.get("tags", []) or release.get("tag-list", []) or [])
+
+    credits = item.get("artist-credit", [])
+    artist_id = None
+    for credit in credits:
+        if isinstance(credit, dict) and isinstance(credit.get("artist"), dict):
+            artist_id = credit["artist"].get("id")
+            if artist_id:
+                break
+
+    release_group_id = (release.get("release-group") or {}).get("id")
+    if release_group_id:
+        try:
+            group_data = musicbrainz_lookup_json("release-group", release_group_id, "tags")
+            group = group_data.get("release-group", {})
+            raw_genres.extend(group.get("tags", []) or group.get("tag-list", []) or [])
+        except Exception as exc:
+            print(f"⚠️ [Suggestions] Could not fetch release-group genres: {exc}", flush=True)
+
+    # Match tagger.py: only use artist tags if the recording/release/group had no tags.
+    if not raw_genres and artist_id:
+        try:
+            artist_data = musicbrainz_lookup_json("artist", artist_id, "tags")
+            artist = artist_data.get("artist", {})
+            raw_genres.extend(artist.get("tags", []) or artist.get("tag-list", []) or [])
+        except Exception as exc:
+            print(f"⚠️ [Suggestions] Could not fetch artist genres: {exc}", flush=True)
+
+    genre_scores = {}
+    for tag in raw_genres:
+        name = str(tag.get("name", "")).lower().strip()
+        try:
+            count = int(tag.get("count", 1))
+        except (TypeError, ValueError):
+            count = 1
+        if not name or name in ["rock", "pop", "american", "usa", "band", "male vocal"]:
+            continue
+        genre_scores[name] = genre_scores.get(name, 0) + count
+
+    sorted_genres = sorted(genre_scores.items(), key=lambda x: x[1], reverse=True)
+    return "; ".join(g[0].title() for g in sorted_genres[:3]) or "Rock"
+
 def get_musicbrainz_suggestions(path):
     global MB_LAST_REQUEST
     st = os.stat(path)
     artist, title, query = musicbrainz_query_for_file(path)
-    cache_key = f"{os.path.realpath(path)}|{st.st_size}|{st.st_mtime_ns}|{query}|genre-v1"
+    cache_key = f"{os.path.realpath(path)}|{st.st_size}|{st.st_mtime_ns}|{query}|genre-v2"
     with MB_CACHE_LOCK:
         try:
             with open(MB_CACHE_FILE, "r", encoding="utf-8") as f:
@@ -928,23 +1008,7 @@ def get_musicbrainz_suggestions(path):
         artist_name = "".join(str(c.get("name", c.get("artist", {}).get("name", ""))) for c in credits if isinstance(c, dict))
         releases = item.get("releases", [])
         release = releases[0] if releases else {}
-        # Use the same weighted top-three genre selection as tagger.py.
-        # The recording search's included tags are used here without making
-        # extra MusicBrainz requests for every result in the suggestion list.
-        raw_genres = list(item.get("tags", []) or item.get("tag-list", []) or [])
-        raw_genres.extend(release.get("tags", []) or release.get("tag-list", []) or [])
-        genre_scores = {}
-        for tag in raw_genres:
-            name = str(tag.get("name", "")).lower().strip()
-            try:
-                count = int(tag.get("count", 1))
-            except (TypeError, ValueError):
-                count = 1
-            if not name or name in ["rock", "pop", "american", "usa", "band", "male vocal"]:
-                continue
-            genre_scores[name] = genre_scores.get(name, 0) + count
-        sorted_genres = sorted(genre_scores.items(), key=lambda x: x[1], reverse=True)
-        genre = "; ".join(g[0].title() for g in sorted_genres[:3]) or "Rock"
+        genre = musicbrainz_suggestion_genre(item, release)
         suggestions.append({
             "id": item.get("id", ""),
             "title": item.get("title", ""),
@@ -1157,7 +1221,7 @@ async function loadMusicBrainzSuggestions(path){
    row.style.cssText='display:block;width:100%;text-align:left;margin:8px 0;padding:12px;background:#263238;border:1px solid #03a9f4;border-radius:6px;white-space:normal;';
    row.append(el('div',`${i+1}. ${item.artist} — ${item.title}`,'tagkey'));
    row.append(el('div',[item.album,item.date,item.score?`Match ${item.score}%`: ''].filter(Boolean).join(' · ')||'No release details','tagvalue'));
-   row.append(el('div',`Genre: ${item.genre||'Rock'}`,'muted'));
+   row.append(el('div',`Genre: ${item.genre||'Rock'} · MusicBrainz release-group tags`,'muted'));
    if(item.id)row.append(el('div',`Recording MBID: ${item.id}`,'muted'));
    row.append(el('div','▶ Tap to use this match and fill the tags','muted'));
    row.onclick=()=>applyMusicBrainzSuggestion(path,item,row);
