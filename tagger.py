@@ -5,11 +5,8 @@ import fcntl
 import musicbrainzngs
 from mutagen.id3 import ID3, TIT2, TPE1, TALB, TCON, TRCK, TDRC, TPE2, TXXX
 
-musicbrainzngs.set_useragent(
-    "JakesStationRipper",
-    "2026.11",
-    "https://github.com/JakeLC15/Jakes-Radio-Rip"
-)
+musicbrainzngs.set_useragent("JakesStationRipper", "2026.11", "https://github.com/JakeLC15/Jakes-Radio-Rip")
+
 def musicbrainz_request(function, *args, **kwargs):
     lock_file_path = "/tmp/musicbrainz_api.lock"
 
@@ -26,7 +23,21 @@ def musicbrainz_request(function, *args, **kwargs):
         if elapsed < 2.0:
             time.sleep(2.0 - elapsed)
         try:
-            return function(*args, **kwargs)
+            for attempt in range(3):
+                try:
+                    return function(*args, **kwargs)
+                except Exception as exc:
+                    message = str(exc).lower()
+                    is_rate_limit = "503" in message or "service unavailable" in message
+                    if not is_rate_limit or attempt >= 2:
+                        raise
+                    backoff = 4.0 * (2 ** attempt)
+                    print(f"⚠️ MusicBrainz returned 503; retrying in {backoff:.0f}s", flush=True)
+                    lock_file.seek(0)
+                    lock_file.truncate()
+                    lock_file.write(str(time.time()))
+                    lock_file.flush()
+                    time.sleep(backoff)
         finally:
             lock_file.seek(0)
             lock_file.truncate()
@@ -81,17 +92,17 @@ def clean_and_tag_file(file_path, raw_title):
                 
             # STRING NORMALIZATION HELPERS FOR VALIDATION
             def normalize_str(s):
-                removals = ["'", "’", '"', "“", "”", "-", "/", ".", ",", "!", "?", "(", ")", "[", "]"]
+                removals = ["'", "’", '"', "“", "”", "-", ".", ",", "!", "?", "(", ")", "[", "]"]
                 out = s.lower().strip()
                 for char in removals:
                     out = out.replace(char, "")
                 return " ".join(out.split())
 
             if normalize_str(search_artist) not in normalize_str(clean_artist) and normalize_str(clean_artist) not in normalize_str(search_artist):
-                print(f"❌ [Tagger] Match rejected (Artist Mismatch): '{search_artist}' vs '{clean_artist}'")
+                print(f"❌ Match rejected (Artist Mismatch): '{search_artist}' vs '{clean_artist}'")
                 return
             if normalize_str(search_title) not in normalize_str(clean_title) and normalize_str(clean_title) not in normalize_str(search_title):
-                print(f"❌ [Tagger] Match rejected (Title Mismatch): '{search_title}' vs '{clean_title}'")
+                print(f"❌ Match rejected (Title Mismatch): '{search_title}' vs '{clean_title}'")
                 return
 
             album_name = "Jakes Rip"
@@ -172,13 +183,14 @@ def clean_and_tag_file(file_path, raw_title):
                 audio['TXXX:MusicBrainz Release Group Id'] = TXXX(encoding=3, desc='MusicBrainz Release Group Id', text=rg_id)
 
             audio.save(file_path)
-            print(f"✅ [Tagger] Successfully tagged: {clean_artist} - {clean_title} [Album: {album_name}] [Track #: {track_num}] [Year: {release_date[:4]}] [Genre: {genre_name}]")
+            print(f"✅ Successfully tagged: {clean_artist} - {clean_title} [Album: {album_name}] [Track #: {track_num}] [Year: {release_date[:4]}] [Genre: {genre_name}]")
         else:
-            print(f"🔍🚫 [Tagger] No match found for: {raw_title}")
+            print(f"❌ No match found for: {raw_title}")
                 
     except Exception as e:
-        print(f"[Tagger] Metadata processing failure: {e}")
+        print(f"❓ Metadata processing failure: {e}")
 
 if __name__ == "__main__":
     if len(sys.argv) >= 3:
+
         clean_and_tag_file(sys.argv[1], sys.argv[2])
