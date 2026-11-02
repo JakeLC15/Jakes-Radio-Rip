@@ -1016,6 +1016,14 @@ def _get_musicbrainz_suggestions_unlocked(path):
 
     try:
         data = musicbrainz_request(url)
+        recordings = data.get("recordings", [])
+
+        if recordings:
+            print(
+                "[MusicBrainz DEBUG] First recording release data:",
+                json.dumps(recordings[0].get("releases", []), indent=2),
+                flush=True
+            )
 
         # Accept either a parsed dictionary or raw JSON text.
         if isinstance(data, str):
