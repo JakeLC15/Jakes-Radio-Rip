@@ -871,8 +871,24 @@ def musicbrainz_suggestion_genre(path, recording):
         if not isinstance(recording, dict):
             return "Rock"
 
-        # Look for tags included in the recording response.
+        # First check recording-level tags.
         tags = recording.get("tags", [])
+
+        # Then check release-group tags.
+        if not tags:
+            releases = recording.get("releases", [])
+
+            for release in releases:
+                if not isinstance(release, dict):
+                    continue
+
+                release_group = release.get("release-group", {})
+
+                if isinstance(release_group, dict):
+                    tags = release_group.get("tags", [])
+
+                if tags:
+                    break
 
         if isinstance(tags, list) and tags:
             valid_tags = [
@@ -885,9 +901,10 @@ def musicbrainz_suggestion_genre(path, recording):
                     key=lambda tag: int(tag.get("count", 0)),
                     reverse=True
                 )
-                return valid_tags[0].get("name", "Rock")
 
-        # Check existing file genre if available.
+                return valid_tags[0]["name"]
+
+        # Fall back to existing file genre.
         try:
             existing_genre = get_id3_genre(path)
             if existing_genre:
