@@ -973,6 +973,12 @@ def musicbrainz_suggestion_genre(path, recording):
             pass
 
         return "Rock"
+    except Exception as e:
+        print(
+            f"[MusicBrainz] Genre lookup failed: {e}",
+            flush=True
+        )
+        return "Rock"
 
 def load_musicbrainz_cache():
     try:
