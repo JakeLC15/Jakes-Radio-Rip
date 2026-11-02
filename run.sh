@@ -920,6 +920,29 @@ def musicbrainz_suggestion_genre(item, release, file_path=None):
     sorted_genres = sorted(genre_scores.items(), key=lambda x: x[1], reverse=True)
     return "; ".join(g[0].title() for g in sorted_genres[:3]) or "Rock"
 
+def load_musicbrainz_cache():
+    try:
+        if os.path.exists(MB_CACHE_FILE):
+            with open(MB_CACHE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return data if isinstance(data, dict) else {}
+    except Exception as e:
+        print(f"[MusicBrainz] Cache read error: {e}", flush=True)
+
+    return {}
+
+def save_musicbrainz_cache(cache):
+    try:
+        temp_file = MB_CACHE_FILE + ".tmp"
+
+        with open(temp_file, "w", encoding="utf-8") as f:
+            json.dump(cache, f, ensure_ascii=False, indent=2)
+
+        os.replace(temp_file, MB_CACHE_FILE)
+
+    except Exception as e:
+        print(f"[MusicBrainz] Cache write error: {e}", flush=True)
+        
 def _get_musicbrainz_suggestions_unlocked(path):
     query = musicbrainz_query_for_file(path)
     if not query:
