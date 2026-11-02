@@ -975,8 +975,15 @@ def musicbrainz_request(url):
 
 
 def _get_musicbrainz_suggestions_unlocked(path):
-    query = musicbrainz_query_for_file(path)
+    query_result = musicbrainz_query_for_file(path)
 
+    if isinstance(query_result, tuple):
+        query = query_result[0]
+    else:
+        query = query_result
+
+    query = str(query or "")
+    
     if not query:
         return {
             "query": "",
@@ -1067,7 +1074,14 @@ def _get_musicbrainz_suggestions_unlocked(path):
         }
 
 def get_musicbrainz_suggestions(path):
-    query = musicbrainz_query_for_file(path)
+    query_result = musicbrainz_query_for_file(path)
+
+    if isinstance(query_result, tuple):
+        query = query_result[0]
+    else:
+        query = query_result
+
+    query = str(query or "")
 
     if not query:
         return {
