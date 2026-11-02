@@ -2,7 +2,7 @@
 
 echo "========================================"
 echo "JAKE'S STATION RIPPER STARTING"
-echo "BUILD TEST: 2026-11-02-3"
+echo "BUILD TEST: 2026-11-02-4"
 echo "========================================"
 
 set -uo pipefail
@@ -288,6 +288,14 @@ watch_all_completed_files() {
         fi
 
         (
+            # Deduplicate close_write/moved_to and tagger-generated inotify events.
+            # The lock is non-blocking: if this path is already being processed,
+            # discard this duplicate event rather than queueing another tagger.
+            mkdir -p /tmp/jakes_station_ripper_tagger_locks
+            LOCK_KEY=$(printf '%s' "$REAL_PATH" | sha256sum | awk '{print $1}')
+            exec 9>"/tmp/jakes_station_ripper_tagger_locks/${LOCK_KEY}.lock"
+            flock -n 9 || exit 0
+
             # Allow Streamripper to cleanly finish file write ops
             sleep 2
 
@@ -316,8 +324,14 @@ watch_all_completed_files() {
 
             # 2. FILE IS VALID -> EXECUTE MUSICBRAINZ AUTO-TAGGING NATIVELY
             if [ "${MUSICBRAINZ_TAGGING}" = "true" ]; then
-                # Double-check file existence one last time before hitting the python interpreter engine
                 if nas_state_is_online && [ -f "$REAL_PATH" ]; then
+                    # The tagger itself writes the MP3, which creates another
+                    # inotify close_write event. Check its MBID before launching
+                    # another full tagger process for that self-generated event.
+                    if python3 /tagger.py --is-tagged "$REAL_PATH" >/dev/null 2>&1; then
+                        echo "⏭️ [Watcher] Already MusicBrainz-tagged; ignoring repeat event: $RAW_TITLE"
+                        exit 0
+                    fi
                     echo "🎵 [Watcher] Passing completed track to tagger: $RAW_TITLE"
                     python3 /tagger.py "$REAL_PATH" "$RAW_TITLE"
                 fi
@@ -906,7 +920,7 @@ def musicbrainz_suggestion_genre(item, release, file_path=None):
     sorted_genres = sorted(genre_scores.items(), key=lambda x: x[1], reverse=True)
     return "; ".join(g[0].title() for g in sorted_genres[:3]) or "Rock"
 
-def get_musicbrainz_suggestions(path):
+def _get_musicbrainz_suggestions_unlocked(path):
     global MB_LAST_REQUEST
     st = os.stat(path)
     artist, title, query = musicbrainz_query_for_file(path)
@@ -919,10 +933,10 @@ def get_musicbrainz_suggestions(path):
             cache = {}
         cached = cache.get(cache_key)
         if cached and time.time() - cached.get("time", 0) < MB_CACHE_TTL:
-            print(f"📦 [Suggestions] Cache hit: {query}", flush=True)
+            print(f"📦 [Suggestions] Cache used")
             return {"cached": True, "query": query, "suggestions": cached.get("suggestions", [])}
-
-    print(f"🔍 [Suggestions] Querying MusicBrainz: {query}", flush=True)
+            
+    print(f"🔍 [Suggestions] Querying MusicBrainz")
     params = urlencode({"query": query, "fmt": "json", "limit": 5, "inc": "tags+artist-credits+releases"})
     request = urllib.request.Request(
         "https://musicbrainz.org/ws/2/recording/?" + params,
@@ -1007,6 +1021,21 @@ def get_musicbrainz_suggestions(path):
         except OSError:
             pass
     return {"cached": False, "query": query, "suggestions": suggestions}
+
+
+# If the browser sends duplicate suggestion requests for the same file, make
+# them share one lookup instead of serially querying MusicBrainz twice.
+MB_SUGGESTION_LOCKS = {}
+MB_SUGGESTION_LOCKS_GUARD = Lock()
+def get_musicbrainz_suggestions(path):
+    st = os.stat(path)
+    _, _, query = musicbrainz_query_for_file(path)
+    key = f"{os.path.realpath(path)}|{st.st_size}|{st.st_mtime_ns}|{query}|genre-v4"
+    with MB_SUGGESTION_LOCKS_GUARD:
+        request_lock = MB_SUGGESTION_LOCKS.setdefault(key, Lock())
+    with request_lock:
+        # The inner function checks the persistent cache again after waiting.
+        return _get_musicbrainz_suggestions_unlocked(path)
 
 def music_editor_page():
     return """<!DOCTYPE html>
