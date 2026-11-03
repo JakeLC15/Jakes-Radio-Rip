@@ -1010,7 +1010,7 @@ def save_musicbrainz_cache(cache):
     except Exception as e:
         print(f"[MusicBrainz] Cache save failed: {e}", flush=True)
 
-def musicbrainz_request(url):
+def musicbrainz_request(function, *args, **kwargs):
     with MUSICBRAINZ_REQUEST_LOCK:
         wait = 2 - (time.time() - MUSICBRAINZ_LAST_REQUEST[0])
 
@@ -1019,38 +1019,61 @@ def musicbrainz_request(url):
 
         for attempt in range(3):
             try:
-                req = urllib.request.Request(
-                    url,
-                    headers={
-                        "User-Agent": MUSICBRAINZ_USER_AGENT,
-                        "Accept": "application/json"
-                    }
+                # Support both musicbrainzngs functions and existing URL requests.
+                if callable(function):
+                    result = function(*args, **kwargs)
+
+                else:
+                    url = str(function)
+
+                    req = urllib.request.Request(
+                        url,
+                        headers={
+                            "User-Agent": MUSICBRAINZ_USER_AGENT,
+                            "Accept": "application/json"
+                        }
+                    )
+
+                    with urllib.request.urlopen(req, timeout=25) as response:
+                        raw = response.read().decode(
+                            "utf-8", errors="replace"
+                        )
+
+                    if not raw.strip():
+                        raise RuntimeError(
+                            "MusicBrainz returned an empty response"
+                        )
+
+                    result = json.loads(raw)
+
+                MUSICBRAINZ_LAST_REQUEST[0] = time.time()
+                return result
+
+            except Exception as e:
+                MUSICBRAINZ_LAST_REQUEST[0] = time.time()
+
+                message = str(e).lower()
+                is_503 = (
+                    "503" in message
+                    or "service unavailable" in message
                 )
 
-                with urllib.request.urlopen(req, timeout=25) as response:
-                    raw = response.read().decode(
-                        "utf-8", errors="replace"
-                    )
-
-                MUSICBRAINZ_LAST_REQUEST[0] = time.time()
-
-                if not raw.strip():
-                    raise RuntimeError(
-                        "MusicBrainz returned an empty response"
-                    )
-
-                return json.loads(raw)
-
-            except urllib.error.HTTPError as e:
-                MUSICBRAINZ_LAST_REQUEST[0] = time.time()
-
-                if e.code == 503 and attempt < 2:
-                    retry_after = e.headers.get("Retry-After", "4")
+                if is_503 and attempt < 2:
+                    retry_after = getattr(
+                        getattr(e, "headers", None),
+                        "get",
+                        lambda *a: "4"
+                    )("Retry-After", "4")
 
                     try:
                         delay = int(retry_after)
-                    except ValueError:
+                    except (TypeError, ValueError):
                         delay = 4 * (2 ** attempt)
+
+                    print(
+                        f"[MusicBrainz] 503 error; retrying in {delay}s",
+                        flush=True
+                    )
 
                     time.sleep(delay)
                     continue
@@ -1058,7 +1081,7 @@ def musicbrainz_request(url):
                 raise
 
     raise RuntimeError("MusicBrainz request failed")
-
+    
 def _get_musicbrainz_suggestions_unlocked(path):
     artist, title, query = musicbrainz_query_for_file(path)
 
