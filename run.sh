@@ -1079,8 +1079,21 @@ def musicbrainz_request(function, *args, **kwargs):
                     continue
 
                 raise
+    with MB_CACHE_LOCK:
+        cache = load_musicbrainz_cache()
 
-    raise RuntimeError("MusicBrainz request failed")
+        cache[cache_key] = {
+            "timestamp": time.time(),
+            "suggestions": suggestions
+        }
+
+        save_musicbrainz_cache(cache)
+
+    return {
+        "query": query,
+        "suggestions": suggestions,
+        "cached": False
+    }
     
 def _get_musicbrainz_suggestions_unlocked(path):
     artist, title, query = musicbrainz_query_for_file(path)
