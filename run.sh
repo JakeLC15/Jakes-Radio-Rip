@@ -1031,7 +1031,7 @@ def musicbrainz_request(function, *args, **kwargs):
         save_musicbrainz_cache(cache)
 
     return {"query": query, "suggestions": suggestions, "cached": False}
-    
+
 def _get_musicbrainz_suggestions_unlocked(path):
     artist, title, query = musicbrainz_query_for_file(path)
 
@@ -1043,7 +1043,7 @@ def _get_musicbrainz_suggestions_unlocked(path):
             "error": "Could not create search query"
         }
 
-    cache_key = query.strip().lower() + "|genre-v6"
+    cache_key = query.strip().lower() + "|genre-v7"
 
     # Check persistent cache.
     with MB_CACHE_LOCK:
@@ -1056,7 +1056,9 @@ def _get_musicbrainz_suggestions_unlocked(path):
                     "suggestions": entry.get("suggestions", []),
                     "cached": True
                 }
+
     print(f"🔍 [MusicBrainz] Searching: {query}", flush=True)
+
     try:
         result = musicbrainz_request(
             musicbrainzngs.search_recordings,
@@ -1067,7 +1069,11 @@ def _get_musicbrainz_suggestions_unlocked(path):
 
         recordings = result.get("recording-list", [])
 
-        print(f"[MusicBrainz] Received {len(recordings)} recordings", flush=True)
+        print(
+            f"[MusicBrainz] Received {len(recordings)} recordings",
+            flush=True
+        )
+
         suggestions = []
 
         for recording in recordings[:5]:
@@ -1092,6 +1098,7 @@ def _get_musicbrainz_suggestions_unlocked(path):
             release_date = ""
             release_country = ""
             release_format = ""
+
             release_list = recording.get("release-list", [])
 
             if isinstance(release_list, list) and release_list:
@@ -1103,6 +1110,7 @@ def _get_musicbrainz_suggestions_unlocked(path):
                     release_country = first_release.get("country", "")
 
                     formats = first_release.get("medium-list", [])
+
                     if isinstance(formats, list):
                         release_format = ", ".join(
                             str(medium.get("format", ""))
@@ -1111,7 +1119,43 @@ def _get_musicbrainz_suggestions_unlocked(path):
                             and medium.get("format")
                         )
 
-            genres = musicbrainz_suggestion_genre(recording)
+            # Extract any tags already present in the search response.
+            raw_genres = {}
+
+            for tag in recording.get("tag-list", []):
+                if not isinstance(tag, dict):
+                    continue
+
+                name = tag.get("name", "").strip().lower()
+
+                if not name:
+                    continue
+
+                if name in (
+                    "rock",
+                    "pop",
+                    "american",
+                    "usa",
+                    "band",
+                    "male vocal"
+                ):
+                    continue
+
+                try:
+                    count = int(tag.get("count", 1))
+                except (TypeError, ValueError):
+                    count = 1
+
+                raw_genres[name] = raw_genres.get(name, 0) + count
+
+            genres = [
+                name.title()
+                for name, count in sorted(
+                    raw_genres.items(),
+                    key=lambda item: item[1],
+                    reverse=True
+                )[:3]
+            ]
 
             suggestion = {
                 "id": recording.get("id", ""),
@@ -1127,9 +1171,9 @@ def _get_musicbrainz_suggestions_unlocked(path):
             suggestions.append(suggestion)
 
             print(
-                f"[MusicBrainz] Genres for "
-                f"{suggested_artist} - {recording.get('title', '')}: "
-                f"{genres}",
+                f"[MusicBrainz] Result: "
+                f"{suggested_artist} - {recording.get('title', '')} | "
+                f"Genres: {genres}",
                 flush=True
             )
 
@@ -1139,7 +1183,8 @@ def _get_musicbrainz_suggestions_unlocked(path):
             flush=True
         )
         raise
-        
+
+    # Save suggestions to persistent cache.
     with MB_CACHE_LOCK:
         cache = load_musicbrainz_cache()
         cache[cache_key] = {
