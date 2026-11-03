@@ -1255,7 +1255,21 @@ const basePath=window.location.pathname;
 let currentDir='', page=0, selected='', currentFilter='both';
 function apiUrl(params){return basePath+'?'+new URLSearchParams(params).toString();}
 function notice(msg){const n=document.getElementById('notice');n.hidden=false;n.textContent=msg;}
-async function getJSON(params){const r=await fetch(apiUrl(params),{credentials:'same-origin'});const j=await r.json();if(!r.ok||j.error)throw new Error(j.error||('HTTP '+r.status));return j;}
+async function getJSON(params){const r = await fetch(apiUrl(params), {credentials:'same-origin'});
+    let j;
+    try {j = await r.json();} catch (e) 
+    {
+        throw new Error(`Server returned invalid JSON (HTTP ${r.status})`);
+    }
+    if (!r.ok) {
+        throw new Error(j && j.error ? j.error : `HTTP ${r.status}`);
+    }
+    if (!j || typeof j !== 'object') {
+        throw new Error('Server returned an empty or invalid response.');
+    }
+    if (j.error) {
+    throw new Error(j.error);}return j;
+    }
 function el(tag, text, cls){const x=document.createElement(tag);x.textContent=text;if(cls)x.className=cls;return x;}
 async function loadFolder(dir='',p=0){
  currentDir=dir;page=p;document.getElementById('folders').replaceChildren();document.getElementById('songs').replaceChildren();document.getElementById('pager').replaceChildren();
