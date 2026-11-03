@@ -1519,7 +1519,28 @@ try {
         row.onclick = () => applyMusicBrainzSuggestion(path, item, row);
         box.append(row);
     });
+    
+    const combinedGenres = [...allGenres.values()];
+    // Store combined genres invisibly for the selection panel.
+    let genreStore = box.querySelector('.mb-combined-genres');
 
+    if (!genreStore) {
+        genreStore = document.createElement('div');
+        genreStore.className = 'mb-combined-genres';
+        genreStore.style.display = 'none';
+        box.append(genreStore);
+    }
+
+    genreStore.replaceChildren();
+
+    combinedGenres.forEach(genre => {
+        const input = document.createElement('input');
+        input.type = 'hidden';
+        input.name = 'genres';
+        input.value = genre;
+        genreStore.append(input);
+    });
+    
 } catch (e) {
     if (selected === path) {
         box.replaceChildren();
