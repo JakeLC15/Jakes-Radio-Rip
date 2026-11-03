@@ -866,60 +866,65 @@ def musicbrainz_query_for_file(path):
         query = f'recording:"{title}"'
     return artist, title, query
 
-def musicbrainz_suggestion_genre(path, recording):
+def musicbrainz_suggestion_genre(recording):
     try:
         if not isinstance(recording, dict):
-            return "Rock"
+            return []
 
         raw_genres = []
-
-        # 1. Recording-level tags
-        if isinstance(recording.get("tags"), list):
-            raw_genres.extend(recording["tags"])
-
-        # 2. Release-level and release-group tags
-        releases = recording.get("releases", [])
-
+        # Artist ID, used only if no recording/release genres exist.
         artist_id = None
-        release_group_id = None
-
-        for release in releases:
-            if not isinstance(release, dict):
-                continue
-
-            if isinstance(release.get("tags"), list):
-                raw_genres.extend(release["tags"])
-
-            release_group = release.get("release-group", {})
-            if isinstance(release_group, dict):
-                release_group_id = release_group.get("id") or release_group_id
-
-        # Get artist ID from the recording's artist credits
         artist_credits = recording.get("artist-credit", [])
-        for credit in artist_credits:
-            if isinstance(credit, dict):
-                artist = credit.get("artist", {})
-                if isinstance(artist, dict) and artist.get("id"):
-                    artist_id = artist["id"]
-                    break
+        
+        if isinstance(artist_credits, list) and artist_credits:
+            first_credit = artist_credits[0]
+            
+            if isinstance(first_credit, dict):
+                artist = first_credit.get("artist", {})
+                if isinstance(artist, dict):
+                    artist_id = artist.get("id")
 
-        # 3. Fetch release-group tags, just like tagger.py
-        if release_group_id:
-            try:
-                rg_data = musicbrainz_request(
-                    musicbrainzngs.get_release_group_by_id,
-                    release_group_id,
-                    includes=["tags"]
-                )
+        recording_tags = recording.get("tag-list", [])
+        if isinstance(recording_tags, list):
+            raw_genres.extend(recording_tags)
 
-                rg_tags = rg_data.get("release-group", {}).get("tag-list", [])
-                if isinstance(rg_tags, list):
-                    raw_genres.extend(rg_tags)
+        release_list = recording.get("release-list", [])
+        rg_id = None
 
-            except Exception as e:
-                print(f"[MusicBrainz] Release-group genre lookup failed: {e}", flush=True)
+        if isinstance(release_list, list) and release_list:
+            first_release = release_list[0]
 
-        # 4. Artist-level fallback, just like tagger.py
+            if isinstance(first_release, dict):
+                release_tags = first_release.get("tag-list", [])
+                if isinstance(release_tags, list):
+                    raw_genres.extend(release_tags)
+
+                release_group = first_release.get("release-group", {})
+                if isinstance(release_group, dict):
+                    rg_id = release_group.get("id")
+
+                if rg_id:
+                    try:
+                        rg_data = musicbrainz_request(
+                            musicbrainzngs.get_release_group_by_id,
+                            rg_id,
+                            includes=["tags"]
+                        )
+
+                        rg_tags = (
+                            rg_data.get("release-group", {})
+                            .get("tag-list", [])
+                        )
+
+                        if isinstance(rg_tags, list):
+                            raw_genres.extend(rg_tags)
+
+                    except Exception as e:
+                        print(
+                            f"[MusicBrainz] Release-group genre lookup failed: {e}",
+                            flush=True
+                        )
+
         if not raw_genres and artist_id:
             try:
                 artist_data = musicbrainz_request(
@@ -928,17 +933,25 @@ def musicbrainz_suggestion_genre(path, recording):
                     includes=["tags"]
                 )
 
-                artist_tags = artist_data.get("artist", {}).get("tag-list", [])
+                artist_tags = (
+                    artist_data.get("artist", {}).get("tag-list", [])
+                )
+
                 if isinstance(artist_tags, list):
                     raw_genres.extend(artist_tags)
 
             except Exception as e:
-                print(f"[MusicBrainz] Artist genre lookup failed: {e}", flush=True)
+                print(
+                    f"[MusicBrainz] Artist genre lookup failed: {e}",
+                    flush=True
+                )
 
-        # 5. Score and rank genres using the same exclusions as tagger.py
         genre_scores = {}
 
         for tag in raw_genres:
+            if not isinstance(tag, dict):
+                continue
+
             name = str(tag.get("name", "")).lower().strip()
 
             try:
@@ -959,26 +972,17 @@ def musicbrainz_suggestion_genre(path, recording):
             reverse=True
         )
 
-        if sorted_genres:
-            return "; ".join(
-                genre.title() for genre, score in sorted_genres[:3]
-            )
+        return [
+            genre.title()
+            for genre, score in sorted_genres[:3]
+        ]
 
-        # 6. Existing file genre fallback
-        try:
-            existing_genre = get_id3_genre(path)
-            if existing_genre:
-                return existing_genre
-        except Exception:
-            pass
-
-        return "Rock"
     except Exception as e:
         print(
             f"[MusicBrainz] Genre lookup failed: {e}",
             flush=True
         )
-        return "Rock"
+        return []
 
 def load_musicbrainz_cache():
     try:
@@ -987,7 +991,6 @@ def load_musicbrainz_cache():
             return data if isinstance(data, dict) else {}
     except (OSError, ValueError):
         return {}
-
 
 def save_musicbrainz_cache(cache):
     temp_file = MB_CACHE_FILE + ".tmp"
@@ -1000,7 +1003,6 @@ def save_musicbrainz_cache(cache):
 
     except Exception as e:
         print(f"[MusicBrainz] Cache save failed: {e}", flush=True)
-
 
 def musicbrainz_request(url):
     with MUSICBRAINZ_REQUEST_LOCK:
@@ -1051,7 +1053,6 @@ def musicbrainz_request(url):
 
     raise RuntimeError("MusicBrainz request failed")
 
-
 def _get_musicbrainz_suggestions_unlocked(path):
     artist, title, query = musicbrainz_query_for_file(path)
 
@@ -1076,126 +1077,91 @@ def _get_musicbrainz_suggestions_unlocked(path):
                     "suggestions": entry.get("suggestions", []),
                     "cached": True
                 }
-
     print(f"🔍 [MusicBrainz] Searching: {query}", flush=True)
-    params = urllib.parse.urlencode({
-        "query": query,
-        "fmt": "json",
-        "limit": 5,
-        "inc": "tags+artist-credits+releases"
-    })
-
-    url = (
-        "https://musicbrainz.org/ws/2/recording/?"
-        + params
-    )
-
     try:
-        data = musicbrainz_request(url)
-        recordings = data.get("recordings", [])
-
-        if recordings:
-            print(
-                "[MusicBrainz DEBUG] First recording release data:",
-                json.dumps(recordings[0].get("releases", []), indent=2),
-                flush=True
-            )
-
-        # Accept either a parsed dictionary or raw JSON text.
-        if isinstance(data, str):
-            data = json.loads(data)
-
-        if not isinstance(data, dict):
-            raise RuntimeError(
-                f"Unexpected MusicBrainz response type: {type(data).__name__}"
-            )
-
-        if "recordings" not in data:
-            raise RuntimeError(
-                f"MusicBrainz response missing recordings. "
-                f"Keys: {list(data.keys())}"
-            )
-
-        suggestions = []
-
-        recordings = data.get("recordings", [])
-
-        print(
-            f"[MusicBrainz] Received {len(recordings)} recordings",
-            flush=True
+        result = musicbrainz_request(
+            musicbrainzngs.search_recordings,
+            artist=artist,
+            recording=title,
+            limit=5,
+            includes=["tags", "artist-credits", "releases"]
         )
+
+        recordings = result.get("recording-list", [])
+
+        print(f"[MusicBrainz] Received {len(recordings)} recordings", flush=True)
+        suggestions = []
 
         for recording in recordings[:5]:
             if not isinstance(recording, dict):
-                print(
-                    f"[MusicBrainz] Skipping unexpected result: {type(recording).__name__}",
-                    flush=True
-                )
                 continue
+
             artist_credit = recording.get("artist-credit", [])
+            suggested_artist = artist
 
-            artist = "".join(
-                item.get("name", "")
-                if isinstance(item, dict)
-                else str(item)
-                for item in artist_credit
-            )
-
-            releases = recording.get("releases", [])
+            if (
+                isinstance(artist_credit, list)
+                and artist_credit
+                and isinstance(artist_credit[0], dict)
+            ):
+                suggested_artist = (
+                    artist_credit[0]
+                    .get("artist", {})
+                    .get("name", artist)
+                )
 
             release = ""
             release_date = ""
             release_country = ""
             release_format = ""
+            release_list = recording.get("release-list", [])
 
-            if releases and isinstance(releases[0], dict):
-                first_release = releases[0]
-            
+            if isinstance(release_list, list) and release_list:
+                first_release = release_list[0]
+
                 if isinstance(first_release, dict):
                     release = first_release.get("title", "")
                     release_date = first_release.get("date", "")
+                    release_country = first_release.get("country", "")
 
-                    # Fall back to release-group title if necessary.
-                    if not release:
-                        release_group = first_release.get("release-group", {})
-                        if isinstance(release_group, dict):
-                            release = release_group.get("title", "")
+                    formats = first_release.get("medium-list", [])
+                    if isinstance(formats, list):
+                        release_format = ", ".join(
+                            str(medium.get("format", ""))
+                            for medium in formats
+                            if isinstance(medium, dict)
+                            and medium.get("format")
+                        )
 
-            suggestions.append({
+            genres = musicbrainz_suggestion_genre(recording)
+
+            suggestion = {
                 "id": recording.get("id", ""),
                 "title": recording.get("title", ""),
-                "artist": artist,
+                "artist": suggested_artist,
                 "release": release,
                 "release_date": release_date,
                 "release_country": release_country,
                 "release_format": release_format,
-                "genres": musicbrainz_suggestion_genre(
-                    path, recording
-                )
-            })
-
-        with MB_CACHE_LOCK:
-            cache = load_musicbrainz_cache()
-            cache[cache_key] = {
-                "timestamp": time.time(),
-                "suggestions": suggestions
+                "genres": genres
             }
-            save_musicbrainz_cache(cache)
 
-        return {
-            "query": query,
-            "suggestions": suggestions,
-            "cached": False
-        }
+            suggestions.append(suggestion)
+
+            print(
+                f"[MusicBrainz] Genres for "
+                f"{suggested_artist} - {recording.get('title', '')}: "
+                f"{genres}",
+                flush=True
+            )
 
     except Exception as e:
-        print(f"[MusicBrainz] Request failed: {e}", flush=True)
-        return {
-            "query": query,
-            "suggestions": [],
-            "cached": False,
-            "error": str(e)
-        }
+        print(
+            f"[MusicBrainz] Suggestion lookup failed: {e}",
+            flush=True
+        )
+        raise
+        
 def get_musicbrainz_suggestions(path):
     artist, title, query = musicbrainz_query_for_file(path)
     query = str(query or "").strip()
