@@ -1357,20 +1357,74 @@ function applyFilter(value) {
 async function selectFile(path){
  try{
   const d=await getJSON({api:'music_info',path});
-  selected=d.path;document.getElementById('editor').hidden=false;
+  selected=d.path;
+  document.getElementById('editor').hidden=false;
   startTagRefresh();
+
   document.getElementById('selectedPath').textContent=d.path;
   document.getElementById('newname').value=d.name;
-  const tags=document.getElementById('tags'), mb=document.getElementById('mbids');tags.replaceChildren();mb.replaceChildren();
+
+  const tags=document.getElementById('tags');
+  const mb=document.getElementById('mbids');
+
+  tags.replaceChildren();
+  mb.replaceChildren();
+
   if(!d.info.tags.length)tags.append(el('p','No ID3 tags found.'));
-  d.info.tags.forEach(t=>{const row=el('div','');row.className='tagrow';row.append(el('div',t.label,'tagkey'),el('div',t.value||'(empty)','tagvalue'));tags.append(row);});
+
+  d.info.tags.forEach(t=>{
+   const row=el('div','');
+   row.className='tagrow';
+   row.append(el('div',t.label,'tagkey'),el('div',t.value||'(empty)','tagvalue'));
+   tags.append(row);
+  });
+
   if(!d.info.musicbrainz.length)mb.append(el('p','No MusicBrainz identifiers found.'));
-  d.info.musicbrainz.forEach(t=>{const row=el('div','');row.className='tagrow';row.append(el('div',t.label,'tagkey'),el('div',t.value||'(empty)','tagvalue'));mb.append(row);});
-  const suggestions=document.getElementById('mbSuggestions');suggestions.replaceChildren();
-  if(!d.info.musicbrainz.length){suggestions.textContent='Searching MusicBrainz once for this untagged track…';loadMusicBrainzSuggestions(d.path);}
-  else{suggestions.textContent='Track already has MusicBrainz identifiers; suggestions are not needed.';}
-  document.getElementById('editor').scrollIntoView({behavior:'smooth',block:'start'});
- }catch(e){notice('Could not read tags: '+e.message);}
+
+  d.info.musicbrainz.forEach(t=>{
+   const row=el('div','');
+   row.className='tagrow';
+   row.append(el('div',t.label,'tagkey'),el('div',t.value||'(empty)','tagvalue'));
+   mb.append(row);
+  });
+
+  const suggestions=document.getElementById('mbSuggestions');
+  suggestions.replaceChildren();
+
+  if(!d.info.musicbrainz.length){
+   const searchButton=el('button','Search MusicBrainz');
+   searchButton.type='button';
+
+   searchButton.onclick=async()=>{
+    if(selected!==d.path)return;
+
+    searchButton.disabled=true;
+    searchButton.textContent='Searching MusicBrainz...';
+
+    await loadMusicBrainzSuggestions(d.path);
+
+    if(selected===d.path){
+     searchButton.disabled=false;
+     searchButton.textContent='Search MusicBrainz Again';
+    }
+   };
+
+   suggestions.append(
+    el('p','Track has no MusicBrainz identifiers.'),
+    searchButton
+   );
+  }else{
+   suggestions.textContent='Track already has MusicBrainz identifiers; suggestions are not needed.';
+  }
+
+  document.getElementById('editor').scrollIntoView({
+   behavior:'smooth',
+   block:'start'
+  });
+
+ }catch(e){
+  notice('Could not read tags: '+e.message);
+ }
 }
 
 async function loadMusicBrainzSuggestions(path) {
