@@ -1106,7 +1106,7 @@ def _get_musicbrainz_suggestions_unlocked(path):
             "error": "Could not create search query"
         }
 
-    cache_key = query.strip().lower() + "|genre-v5"
+    cache_key = query.strip().lower() + "|genre-v6"
 
     # Check persistent cache.
     with MB_CACHE_LOCK:
@@ -1203,6 +1203,20 @@ def _get_musicbrainz_suggestions_unlocked(path):
         )
         raise
         
+    with MB_CACHE_LOCK:
+        cache = load_musicbrainz_cache()
+        cache[cache_key] = {
+            "timestamp": time.time(),
+            "suggestions": suggestions
+        }
+        save_musicbrainz_cache(cache)
+
+    return {
+        "query": query,
+        "suggestions": suggestions,
+        "cached": False
+    }
+    
 def get_musicbrainz_suggestions(path):
     artist, title, query = musicbrainz_query_for_file(path)
     query = str(query or "").strip()
@@ -1215,7 +1229,7 @@ def get_musicbrainz_suggestions(path):
             "error": "Could not create search query"
         }
 
-    lock_key = query.strip().lower() + "|genre-v5"
+    lock_key = query.lower() + "|genre-v6"
 
     with MB_SUGGESTION_LOCKS_GUARD:
         if lock_key not in MB_SUGGESTION_LOCKS:
@@ -1225,7 +1239,7 @@ def get_musicbrainz_suggestions(path):
 
     with request_lock:
         return _get_musicbrainz_suggestions_unlocked(path)
-
+        
 def music_editor_page():
     return """<!DOCTYPE html>
 <html style="background:#111;color:#eee"><head>
