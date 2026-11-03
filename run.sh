@@ -1112,8 +1112,7 @@ def _get_musicbrainz_suggestions_unlocked(path):
             musicbrainzngs.search_recordings,
             artist=artist,
             recording=title,
-            limit=5,
-            includes=["tags", "artist-credits", "releases"]
+            limit=5
         )
 
         recordings = result.get("recording-list", [])
