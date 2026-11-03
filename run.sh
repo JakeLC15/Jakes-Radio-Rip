@@ -1520,41 +1520,6 @@ try {
         box.append(row);
     });
 
-    // Display the combined genre selection.
-    const combinedGenres = [...allGenres.values()];
-
-    if (combinedGenres.length) {
-        const genreBox = document.createElement('div');
-        genreBox.className = 'mb-combined-genres';
-        genreBox.style.cssText = 'margin-top:16px;padding:12px;border:1px solid #03a9f4;border-radius:6px;';
-
-        genreBox.append(el('div',
-            `Combined genres from all ${d.suggestions.length} suggestions`,
-            'tagkey'
-        ));
-
-        combinedGenres.forEach(genre => {
-            const label = document.createElement('label');
-            label.style.cssText = 'display:block;margin:6px 0;';
-
-            const checkbox = document.createElement('input');
-            checkbox.type = 'checkbox';
-            checkbox.name = 'genres';
-            checkbox.value = genre;
-            checkbox.checked = true;
-
-            label.append(checkbox, document.createTextNode(' ' + genre));
-            genreBox.append(label);
-        });
-
-        box.append(genreBox);
-    } else {
-        box.append(el('p',
-            'No genre suggestions found across the five matches.',
-            'muted'
-        ));
-    }
-
 } catch (e) {
     if (selected === path) {
         box.replaceChildren();
