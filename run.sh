@@ -1567,101 +1567,96 @@ try {
 }
 
 function applyMusicBrainzSuggestion(path,item,button){
- if(selected!==path)return;
+if(selected!==path)return;
+if(!item.id){
+    notice('This suggestion has no MusicBrainz recording ID.');
+    return;
+}
 
- if(!item.id){
-  notice('This suggestion has no MusicBrainz recording ID.');
-  return;
- }
+const box=document.getElementById('mbSuggestions');
 
- const box=document.getElementById('mbSuggestions');
+// Collect the combined genres from all five suggestions.
+const combinedGenres=new Map();
 
- // Accept either a list or the older semicolon-separated genre string.
- const rawGenres=item.genres || item.genre || [];
+box.querySelectorAll('.mb-combined-genres input[name="genres"]').forEach(checkbox=>{
+    const genre=checkbox.value.trim();
+    if(genre){
+        combinedGenres.set(genre.toLowerCase(),genre);
+    }
+});
 
- const genres=Array.isArray(rawGenres)
-  ? rawGenres
-  : String(rawGenres).split(';');
+const uniqueGenres=[...combinedGenres.values()];
 
- const uniqueGenres=[];
- const seen=new Set();
+// Create the genre selection panel.
+const panel=document.createElement('div');
+panel.className='card';
+panel.style.marginTop='14px';
+panel.style.background='#303030';
 
- genres.forEach(value=>{
-  const genre=String(value).trim();
-  const key=genre.toLowerCase();
+panel.append(el('h3','Choose Genres'));
 
-  if(genre && !seen.has(key)){
-   seen.add(key);
-   uniqueGenres.push(genre);
-  }
- });
+panel.append(el(
+    'p',
+    'Genres gathered from all five MusicBrainz suggestions. All are selected by default.',
+    'muted'
+));
 
- // Create the genre selection panel.
- const panel=document.createElement('div');
- panel.className='card';
- panel.style.marginTop='14px';
- panel.style.background='#303030';
+const genreContainer=document.createElement('div');
+genreContainer.style.cssText='display:flex;flex-wrap:wrap;gap:8px;margin:12px 0;';
 
- panel.append(el('h3','Choose Genres'));
+uniqueGenres.forEach(genre=>{
+    const label=document.createElement('label');
+    label.style.cssText='display:flex;align-items:center;gap:6px;background:#191919;border:1px solid #555;border-radius:6px;padding:9px;cursor:pointer;';
 
- panel.append(el(
-  'p',
-  'All MusicBrainz suggestions are selected by default. Uncheck any you do not want.',
-  'muted'
- ));
+    const checkbox=document.createElement('input');
+    checkbox.type='checkbox';
+    checkbox.checked=true;
+    checkbox.value=genre;
+    checkbox.className='mb-genre-checkbox';
+    checkbox.style.cssText='width:auto;margin:0;';
 
- const genreContainer=document.createElement('div');
- genreContainer.style.cssText='display:flex;flex-wrap:wrap;gap:8px;margin:12px 0;';
+    label.append(checkbox);
+    label.append(document.createTextNode(genre));
+    genreContainer.append(label);
+});
 
- uniqueGenres.forEach((genre,index)=>{
-  const label=document.createElement('label');
-  label.style.cssText='display:flex;align-items:center;gap:6px;background:#191919;border:1px solid #555;border-radius:6px;padding:9px;cursor:pointer;';
+if(!uniqueGenres.length){
+    genreContainer.append(el(
+        'p',
+        'No MusicBrainz genres were found. You can add your own below.',
+        'muted'
+    ));
+}
 
-  const checkbox=document.createElement('input');
-  checkbox.type='checkbox';
-  checkbox.checked=true;
-  checkbox.value=genre;
-  checkbox.className='mb-genre-checkbox';
-  checkbox.style.cssText='width:auto;margin:0;';
+panel.append(genreContainer);
 
-  label.append(checkbox);
-  label.append(document.createTextNode(genre));
-  genreContainer.append(label);
- });
+// Custom genre entry.
+panel.append(el('label','Add custom genres (separate multiple genres with semicolons)'));
 
- if(!uniqueGenres.length){
-  genreContainer.append(el('p','No MusicBrainz genres were found. You can add your own below.','muted'));
- }
+const customInput=document.createElement('input');
+customInput.type='text';
+customInput.placeholder='e.g. Americana; Southern Rock';
+customInput.id='mbCustomGenres';
+panel.append(customInput);
 
- panel.append(genreContainer);
+const applyButton=el('button','Apply Selected Tags');
+applyButton.style.marginTop='12px';
 
- // Custom genre entry.
- panel.append(el('label','Add custom genres (separate multiple genres with semicolons)'));
+const cancelButton=el('button','Cancel');
+cancelButton.style.cssText='margin:12px 0 0 8px;background:#555;';
 
- const customInput=document.createElement('input');
- customInput.type='text';
- customInput.placeholder='e.g. Americana; Southern Rock';
- customInput.id='mbCustomGenres';
- panel.append(customInput);
+applyButton.onclick=()=>saveMusicBrainzSuggestion(path,item,panel,applyButton);
+cancelButton.onclick=()=>loadMusicBrainzSuggestions(path);
 
- const applyButton=el('button','Apply Selected Tags');
- applyButton.style.marginTop='12px';
+panel.append(applyButton,cancelButton);
 
- const cancelButton=el('button','Cancel');
- cancelButton.style.cssText='margin:12px 0 0 8px;background:#555;';
+// Replace any previous selection panel.
+const oldPanel=box.querySelector('.card');
+if(oldPanel)oldPanel.remove();
 
- applyButton.onclick=()=>saveMusicBrainzSuggestion(path,item,panel,applyButton);
- cancelButton.onclick=()=>loadMusicBrainzSuggestions(path);
+box.append(panel);
 
- panel.append(applyButton,cancelButton);
-
- // Replace any previous selection panel.
- const oldPanel=box.querySelector('.card');
- if(oldPanel)oldPanel.remove();
-
- box.append(panel);
-
- panel.scrollIntoView({behavior:'smooth',block:'nearest'});
+panel.scrollIntoView({behavior:'smooth',block:'nearest'});
 }
 
 async function saveMusicBrainzSuggestion(path,item,panel,button){
