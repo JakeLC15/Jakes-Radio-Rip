@@ -471,6 +471,7 @@ import html
 import threading
 import urllib.request
 import urllib.error
+import musicbrainzngs
 
 from urllib.parse import parse_qs, urlparse, urlencode
 from datetime import datetime
@@ -480,6 +481,11 @@ from threading import Lock, Thread
 import re
 from mutagen.id3 import ID3, ID3NoHeaderError, TXXX, UFID, TIT2, TPE1, TALB, TDRC, TCON
 
+musicbrainzngs.set_useragent(
+    "JakesStationRipper",
+    "2026.11",
+    "https://github.com/JakeLC15/Jakes-Radio-Rip"
+)
 def update_download_state(status, message):
     with DOWNLOAD_STATE_LOCK:
         DOWNLOAD_STATE.update({"status": status, "message": str(message)[:500], "updated": time.time()})
