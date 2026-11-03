@@ -1689,8 +1689,8 @@ async function saveMusicBrainzSuggestion(path,item,panel,button){
   body.append('path',path);
   body.append('artist',item.artist||'');
   body.append('title',item.title||'');
-  body.append('album',item.album||'');
-  body.append('date',item.date||'');
+  body.append('album',item.release||'');
+  body.append('date',item.release_date||'');
   body.append('recording_id',item.id);
 
   selectedGenres.forEach(genre=>{
