@@ -1437,95 +1437,133 @@ async function selectFile(path){
  }catch(e){notice('Could not read tags: '+e.message);}
 }
 
-async function loadMusicBrainzSuggestions(path){
- const box=document.getElementById('mbSuggestions');
- try{
-     const d=await getJSON({api:'musicbrainz_suggestions',path});
-     if(selected!==path)return;
-     box.replaceChildren();
-     box.append(el('p',
-     ${d.suggestions.length} suggestion(s)${d.cached?' · cached':''}. Search: ${d.query},
-     'muted'
-     ));
-     if(!d.suggestions.length){
-         box.append(el('p','No MusicBrainz matches found.'));
-         return;
-     }
-// Collect genres from ALL suggestions.
- const allGenres = new Map();
- d.suggestions.forEach(item=>{
-     const genres = item.genres || item.genre || [];
-     const genreList = Array.isArray(genres)
-     ? genres
-     : String(genres).split(';');
-     genreList.forEach(genre=>{
-         const name=String(genre).trim();
-         if(name && !allGenres.has(name.toLowerCase())){
-         allGenres.set(name.toLowerCase(),name);
-         }
-     });
- });
- d.suggestions.forEach((item,i)=>{
-     const row=document.createElement('button');
-     row.type='button';
-     row.className='mb-suggestion';
-     row.style.cssText='display;width:100%;text-align;margin:8px 0;padding:12px;background:#263238;border:1px solid #03a9f4;border-radius:6px;white-space;';
-     row.append(el('div',${i+1}. ${item.artist} — ${item.title},'tagkey'));
-     row.append(el('div',[
-     item.release,
-     item.release_date ? item.release_date.substring(0,4) : '',
-     item.release_country,
-     item.release_format,
-     item.score ? Match ${item.score}% : ''
-     ].filter(Boolean).join(' · ') || 'No release details','tagvalue'));
-     const genres = item.genres || item.genre || [];
-     const genreList = Array.isArray(genres)
-     ? genres
-     : String(genres).split(';');
-     row.append(el(
-     'div',
-     Genres: ${genreList.filter(Boolean).join('; ') || 'No genre suggestions'},
-     'muted'
-     ));
-     if(item.id){
-         row.append(el('div',Recording MBID: ${item.id},'muted'));
-     }
-     row.append(el('div','▶ Select this match and choose genres','muted'));
-     row.onclick=()=>applyMusicBrainzSuggestion(path,item,row);
-     box.append(row);
-     });
-// Display the combined genre selection.
- const combinedGenres=[...allGenres.values()];
- if(combinedGenres.length){
-     const genreBox=document.createElement('div');
-     genreBox.className='mb-combined-genres';
-     genreBox.style.cssText='margin-top:16px;padding:12px;border:1px solid #03a9f4;border-radius:6px;';
-     genreBox.append(el('div',
-     Combined genres from all ${d.suggestions.length} suggestions,
-     'tagkey'
-     ));
- combinedGenres.forEach(genre=>{
-     const label=document.createElement('label');
-     label.style.cssText='display;margin:6px 0;';
-     const checkbox=document.createElement('input');
-     checkbox.type='checkbox';
-     checkbox.name='genres';
-     checkbox.value=genre;
-     checkbox.checked=true;
+async function loadMusicBrainzSuggestions(path) {
+const box = document.getElementById('mbSuggestions');
+try {
+    const d = await getJSON({api: 'musicbrainz_suggestions', path});
+    if (selected !== path) return;
 
-     label.append(checkbox,document.createTextNode(' '+genre));
-     genreBox.append(label);
-     });
-     box.append(genreBox);
-     }else{
-     box.append(el('p','No genre suggestions found across the five matches.','muted'));
-     }
-     }catch(e){
-     if(selected===path){
-     box.replaceChildren();
-     box.append(el('p','MusicBrainz suggestions unavailable: '+e.message,'muted'));
-     }
- }
+    box.replaceChildren();
+
+    box.append(el('p',
+        `${d.suggestions.length} suggestion(s)${d.cached ? ' · cached' : ''}. Search: ${d.query}`,
+        'muted'
+    ));
+
+    if (!d.suggestions.length) {
+        box.append(el('p', 'No MusicBrainz matches found.'));
+        return;
+    }
+
+    // Collect genres from ALL suggestions.
+    const allGenres = new Map();
+
+    d.suggestions.forEach(item => {
+        const genres = item.genres || item.genre || [];
+        const genreList = Array.isArray(genres)
+            ? genres
+            : String(genres).split(';');
+
+        genreList.forEach(genre => {
+            const name = String(genre).trim();
+
+            if (name && !allGenres.has(name.toLowerCase())) {
+                allGenres.set(name.toLowerCase(), name);
+            }
+        });
+    });
+
+    // Display all five suggestions.
+    d.suggestions.forEach((item, i) => {
+        const row = document.createElement('button');
+        row.type = 'button';
+        row.className = 'mb-suggestion';
+        row.style.cssText = 'display:block;width:100%;text-align:left;margin:8px 0;padding:12px;background:#263238;border:1px solid #03a9f4;border-radius:6px;white-space:normal;';
+
+        row.append(el('div',
+            `${i + 1}. ${item.artist} — ${item.title}`,
+            'tagkey'
+        ));
+
+        row.append(el('div', [
+            item.release,
+            item.release_date ? item.release_date.substring(0, 4) : '',
+            item.release_country,
+            item.release_format,
+            item.score ? `Match ${item.score}%` : ''
+        ].filter(Boolean).join(' · ') || 'No release details', 'tagvalue'));
+
+        const genres = item.genres || item.genre || [];
+        const genreList = Array.isArray(genres)
+            ? genres
+            : String(genres).split(';');
+
+        row.append(el(
+            'div',
+            `Genres: ${genreList.filter(Boolean).join('; ') || 'No genre suggestions'}`,
+            'muted'
+        ));
+
+        if (item.id) {
+            row.append(el('div',
+                `Recording MBID: ${item.id}`,
+                'muted'
+            ));
+        }
+
+        row.append(el('div',
+            '▶ Select this match and choose genres',
+            'muted'
+        ));
+
+        row.onclick = () => applyMusicBrainzSuggestion(path, item, row);
+        box.append(row);
+    });
+
+    // Display the combined genre selection.
+    const combinedGenres = [...allGenres.values()];
+
+    if (combinedGenres.length) {
+        const genreBox = document.createElement('div');
+        genreBox.className = 'mb-combined-genres';
+        genreBox.style.cssText = 'margin-top:16px;padding:12px;border:1px solid #03a9f4;border-radius:6px;';
+
+        genreBox.append(el('div',
+            `Combined genres from all ${d.suggestions.length} suggestions`,
+            'tagkey'
+        ));
+
+        combinedGenres.forEach(genre => {
+            const label = document.createElement('label');
+            label.style.cssText = 'display:block;margin:6px 0;';
+
+            const checkbox = document.createElement('input');
+            checkbox.type = 'checkbox';
+            checkbox.name = 'genres';
+            checkbox.value = genre;
+            checkbox.checked = true;
+
+            label.append(checkbox, document.createTextNode(' ' + genre));
+            genreBox.append(label);
+        });
+
+        box.append(genreBox);
+    } else {
+        box.append(el('p',
+            'No genre suggestions found across the five matches.',
+            'muted'
+        ));
+    }
+
+} catch (e) {
+    if (selected === path) {
+        box.replaceChildren();
+        box.append(el('p',
+            'MusicBrainz suggestions unavailable: ' + e.message,
+            'muted'
+        ));
+    }
+}
 }
 
 function applyMusicBrainzSuggestion(path,item,button){
