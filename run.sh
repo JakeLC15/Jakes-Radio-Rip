@@ -2,7 +2,7 @@
 
 echo "========================================"
 echo "JAKE'S STATION RIPPER STARTING"
-echo "BUILD TEST: 2026-11-02-4"
+echo "BUILD TEST: 2026-11-02-5"
 echo "========================================"
 
 set -uo pipefail
@@ -1169,7 +1169,7 @@ def _get_musicbrainz_suggestions_unlocked(path):
                 "release_date": release_date,
                 "release_country": release_country,
                 "release_format": release_format,
-                "genre": musicbrainz_suggestion_genre(
+                "genres": musicbrainz_suggestion_genre(
                     path, recording
                 )
             })
@@ -1401,61 +1401,236 @@ async function selectFile(path){
   document.getElementById('editor').scrollIntoView({behavior:'smooth',block:'start'});
  }catch(e){notice('Could not read tags: '+e.message);}
 }
+
 async function loadMusicBrainzSuggestions(path){
  const box=document.getElementById('mbSuggestions');
+
  try{
   const d=await getJSON({api:'musicbrainz_suggestions',path});
   if(selected!==path)return;
+
   box.replaceChildren();
-  box.append(el('p',`${d.suggestions.length} suggestion(s)${d.cached?' · cached':''}. Search: ${d.query}`,'muted'));
-  if(!d.suggestions.length){box.append(el('p','No MusicBrainz matches found.'));return;}
+  box.append(el('p',
+   `${d.suggestions.length} suggestion(s)${d.cached?' · cached':''}. Search: ${d.query}`,
+   'muted'
+  ));
+
+  if(!d.suggestions.length){
+   box.append(el('p','No MusicBrainz matches found.'));
+   return;
+  }
+
   d.suggestions.forEach((item,i)=>{
-   // Make the entire suggestion a single, obvious tap target (important on mobile).
    const row=document.createElement('button');
    row.type='button';
    row.className='mb-suggestion';
    row.style.cssText='display:block;width:100%;text-align:left;margin:8px 0;padding:12px;background:#263238;border:1px solid #03a9f4;border-radius:6px;white-space:normal;';
+
    row.append(el('div',`${i+1}. ${item.artist} — ${item.title}`,'tagkey'));
+
    row.append(el('div',[
-       item.release,
-       item.release_date ? item.release_date.substring(0,4) : '',
-       item.release_country,
-       item.release_format,
-       item.score ? `Match ${item.score}%` : ''
+    item.release,
+    item.release_date ? item.release_date.substring(0,4) : '',
+    item.release_country,
+    item.release_format,
+    item.score ? `Match ${item.score}%` : ''
    ].filter(Boolean).join(' · ') || 'No release details','tagvalue'));
-   row.append(el('div',`Genre: ${item.genre||'Rock'} · MusicBrainz release-group tags`,'muted'));
-   if(item.id)row.append(el('div',`Recording MBID: ${item.id}`,'muted'));
-   row.append(el('div','▶ Tap to use this match and fill the tags','muted'));
+
+   const genres = item.genres || item.genre || [];
+   const genreList = Array.isArray(genres)
+    ? genres
+    : String(genres).split(';');
+
+   row.append(el(
+    'div',
+    `Genres: ${genreList.filter(Boolean).join('; ') || 'No genre suggestions'}`,
+    'muted'
+   ));
+
+   if(item.id){
+    row.append(el('div',`Recording MBID: ${item.id}`,'muted'));
+   }
+
+   row.append(el('div','▶ Select this match and choose genres','muted'));
+
    row.onclick=()=>applyMusicBrainzSuggestion(path,item,row);
    box.append(row);
   });
- }catch(e){if(selected===path){box.replaceChildren();box.append(el('p','MusicBrainz suggestions unavailable: '+e.message,'muted'));}}
+
+ }catch(e){
+  if(selected===path){
+   box.replaceChildren();
+   box.append(el('p','MusicBrainz suggestions unavailable: '+e.message,'muted'));
+  }
+ }
 }
-async function applyMusicBrainzSuggestion(path,item,button){
+
+function applyMusicBrainzSuggestion(path,item,button){
  if(selected!==path)return;
- if(!item.id){notice('This suggestion has no MusicBrainz recording ID.');return;}
+
+ if(!item.id){
+  notice('This suggestion has no MusicBrainz recording ID.');
+  return;
+ }
+
+ const box=document.getElementById('mbSuggestions');
+
+ // Accept either a list or the older semicolon-separated genre string.
+ const rawGenres=item.genres || item.genre || [];
+
+ const genres=Array.isArray(rawGenres)
+  ? rawGenres
+  : String(rawGenres).split(';');
+
+ const uniqueGenres=[];
+ const seen=new Set();
+
+ genres.forEach(value=>{
+  const genre=String(value).trim();
+  const key=genre.toLowerCase();
+
+  if(genre && !seen.has(key)){
+   seen.add(key);
+   uniqueGenres.push(genre);
+  }
+ });
+
+ // Create the genre selection panel.
+ const panel=document.createElement('div');
+ panel.className='card';
+ panel.style.marginTop='14px';
+ panel.style.background='#303030';
+
+ panel.append(el('h3','Choose Genres'));
+
+ panel.append(el(
+  'p',
+  'All MusicBrainz suggestions are selected by default. Uncheck any you do not want.',
+  'muted'
+ ));
+
+ const genreContainer=document.createElement('div');
+ genreContainer.style.cssText='display:flex;flex-wrap:wrap;gap:8px;margin:12px 0;';
+
+ uniqueGenres.forEach((genre,index)=>{
+  const label=document.createElement('label');
+  label.style.cssText='display:flex;align-items:center;gap:6px;background:#191919;border:1px solid #555;border-radius:6px;padding:9px;cursor:pointer;';
+
+  const checkbox=document.createElement('input');
+  checkbox.type='checkbox';
+  checkbox.checked=true;
+  checkbox.value=genre;
+  checkbox.className='mb-genre-checkbox';
+  checkbox.style.cssText='width:auto;margin:0;';
+
+  label.append(checkbox);
+  label.append(document.createTextNode(genre));
+  genreContainer.append(label);
+ });
+
+ if(!uniqueGenres.length){
+  genreContainer.append(el('p','No MusicBrainz genres were found. You can add your own below.','muted'));
+ }
+
+ panel.append(genreContainer);
+
+ // Custom genre entry.
+ panel.append(el('label','Add custom genres (separate multiple genres with semicolons)'));
+
+ const customInput=document.createElement('input');
+ customInput.type='text';
+ customInput.placeholder='e.g. Americana; Southern Rock';
+ customInput.id='mbCustomGenres';
+ panel.append(customInput);
+
+ const applyButton=el('button','Apply Selected Tags');
+ applyButton.style.marginTop='12px';
+
+ const cancelButton=el('button','Cancel');
+ cancelButton.style.cssText='margin:12px 0 0 8px;background:#555;';
+
+ applyButton.onclick=()=>saveMusicBrainzSuggestion(path,item,panel,applyButton);
+ cancelButton.onclick=()=>loadMusicBrainzSuggestions(path);
+
+ panel.append(applyButton,cancelButton);
+
+ // Replace any previous selection panel.
+ const oldPanel=box.querySelector('.card');
+ if(oldPanel)oldPanel.remove();
+
+ box.append(panel);
+
+ panel.scrollIntoView({behavior:'smooth',block:'nearest'});
+}
+
+async function saveMusicBrainzSuggestion(path,item,panel,button){
+ if(selected!==path)return;
+
+ const selectedGenres=Array.from(
+  panel.querySelectorAll('.mb-genre-checkbox:checked')
+ ).map(input=>input.value);
+
+ const custom=document.getElementById('mbCustomGenres').value;
+
+ custom.split(';').forEach(value=>{
+  const genre=value.trim();
+
+  if(genre && !selectedGenres.some(
+   existing=>existing.toLowerCase()===genre.toLowerCase()
+  )){
+   selectedGenres.push(genre);
+  }
+ });
+
+ if(selectedGenres.length>30){
+  notice('Please select no more than 30 genres.');
+  return;
+ }
+
  const description=[item.artist,item.title].filter(Boolean).join(' — ');
- if(!confirm(`Apply this MusicBrainz match to the MP3 tags?\\n\\n${description}\\n\\nThis will update Artist, Title, Album, Year, Genre and the MusicBrainz Recording ID. Other tags will be preserved.`))return;
+
+ if(!confirm(
+  `Apply this MusicBrainz match to the MP3 tags?\n\n${description}\n\nGenres: ${selectedGenres.join('; ') || '(existing genre will be preserved)'}\n\nOther unrelated tags will be preserved.`
+ )){
+  return;
+ }
+
  button.disabled=true;
+
  try{
-  const body=new URLSearchParams({
-   action:'apply_musicbrainz_suggestion',
-   path,
-   artist:item.artist||'',
-   title:item.title||'',
-   album:item.album||'',
-   date:item.date||'',
-   genre:item.genre||'Rock',
-   recording_id:item.id
+  const body=new URLSearchParams();
+
+  body.append('action','apply_musicbrainz_suggestion');
+  body.append('path',path);
+  body.append('artist',item.artist||'');
+  body.append('title',item.title||'');
+  body.append('album',item.album||'');
+  body.append('date',item.date||'');
+  body.append('recording_id',item.id);
+
+  selectedGenres.forEach(genre=>{
+   body.append('genres',genre);
   });
-  const r=await fetch(basePath,{method:'POST',body,credentials:'same-origin'});
+
+  const r=await fetch(basePath,{
+   method:'POST',
+   body,
+   credentials:'same-origin'
+  });
+
   const result=await r.json();
-  if(!r.ok||!result.ok)throw new Error(result.error||('HTTP '+r.status));
+
+  if(!r.ok||!result.ok){
+   throw new Error(result.error||('HTTP '+r.status));
+  }
+
   notice(result.message);
   await refreshCurrentTags();
+
  }catch(e){
   console.error('Could not apply MusicBrainz suggestion:',e);
   notice('Could not apply MusicBrainz suggestion: '+e.message);
+
  }finally{
   button.disabled=false;
  }
@@ -2276,7 +2451,24 @@ class IngressHandler(BaseHTTPRequestHandler):
                     title = form.get("title", [""])[0].strip()
                     album = form.get("album", [""])[0].strip()
                     date = form.get("date", [""])[0].strip()
-                    genre = form.get("genre", [""])[0].strip()
+                    # Accept multiple selected genres, while supporting the old single-genre field.
+                    genres = form.get("genres", [])
+                    if not genres:
+                        genres = form.get("genre", [])
+
+                    selected_genres = []
+                    seen_genres = set()
+
+                    for value in genres:
+                        for item in str(value).split(";"):
+                            item = item.strip()
+                            key = item.casefold()
+
+                            if item and key not in seen_genres:
+                                selected_genres.append(item)
+                                seen_genres.add(key)
+
+                    genre = "; ".join(selected_genres)
                     recording_id = form.get("recording_id", [""])[0].strip()
 
                     if not recording_id or not re.fullmatch(r"[0-9a-fA-F-]{36}", recording_id):
@@ -2285,6 +2477,8 @@ class IngressHandler(BaseHTTPRequestHandler):
                         raise ValueError("The suggestion must include both artist and title.")
                     if any(len(value) > 1000 for value in (artist, title, album, date, genre)):
                         raise ValueError("One or more suggested tag values are too long.")
+                    if len(selected_genres) > 30:
+                        raise ValueError("Too many genres selected.")
 
                     try:
                         audio = ID3(target)
