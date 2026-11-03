@@ -41,13 +41,11 @@ if [ -f "$CONFIG_PATH" ]; then
     CONTINUOUS_RECORDING=$(jq --raw-output '.continuous_recording // false' "$CONFIG_PATH")
     MUSICBRAINZ_TAGGING=$(jq --raw-output '.musicbrainz_tagging // true' "$CONFIG_PATH")
     PURGE_DUPLICATES=$(jq --raw-output '.purge_duplicates // true' "$CONFIG_PATH")
-    
     NAS_MOUNT_CHECK=$(jq --raw-output '.nas_mount_check // ""' "$CONFIG_PATH")
     NAS_STATUS_ENTITY=$(jq --raw-output '.nas_status_entity // ""' "$CONFIG_PATH")
 
     mapfile -t STREAM_URLS < <(jq --raw-output '.streams[] // empty' "$CONFIG_PATH")
 fi
-
 
 ADS_REMOVED_FILE="${BASE_OUTPUT_DIR}/ads_removed.json"
 ADS_REMOVED_LOCK="${BASE_OUTPUT_DIR}/ads_removed.lock"
@@ -354,9 +352,6 @@ STREAM_URLS_JSON=$(printf '%s\n' "${STREAM_URLS[@]}" |
     jq -Rsc 'split("\n") | map(select(length > 0))')
 export STREAM_URLS_JSON
 
-# status.json is an active-stream runtime file, not a bookmark/history of
-# every station ever used. Remove entries for streams no longer in options.json.
-# Saved bookmarks live separately in /data/saved_streams.json.
 if nas_state_is_online && [ -f "$STATUS_FILE" ]; then
     ACTIVE_STATIONS_JSON=$(printf '%s\n' "${STREAM_URLS[@]}" |
         awk -F/ 'NF >= 3 { name=$3; if (name != "") print name }' |
@@ -481,11 +476,8 @@ from threading import Lock, Thread
 import re
 from mutagen.id3 import ID3, ID3NoHeaderError, TXXX, UFID, TIT2, TPE1, TALB, TDRC, TCON
 
-musicbrainzngs.set_useragent(
-    "JakesStationRipper",
-    "2026.11",
-    "https://github.com/JakeLC15/Jakes-Radio-Rip"
-)
+musicbrainzngs.set_useragent("JakesStationRipper", "2026.11", "https://github.com/JakeLC15/Jakes-Radio-Rip")
+
 def update_download_state(status, message):
     with DOWNLOAD_STATE_LOCK:
         DOWNLOAD_STATE.update({"status": status, "message": str(message)[:500], "updated": time.time()})
@@ -621,7 +613,6 @@ DUPLICATES_REMOVED_FILE = os.environ.get(
 )
 
 MIN_FILE_SIZE_MB = float(os.environ.get("MIN_FILE_SIZE_MB", "1"))
-
 CONFIG_PATH = "/data/options.json"
 SAVED_STREAMS_FILE = "/data/saved_streams.json"
 SUPERVISOR_URL = "http://supervisor"
@@ -643,10 +634,7 @@ def supervisor_request(method, endpoint, payload=None):
         )
 
     body = None
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json",
-    }
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json",}
 
     if payload is not None:
         body = json.dumps(payload).encode("utf-8")
@@ -670,7 +658,6 @@ def supervisor_request(method, endpoint, payload=None):
         raise RuntimeError(
             f"Cannot reach Supervisor at {SUPERVISOR_URL}: {e}"
         ) from e
-
     try:
         result = json.loads(raw)
     except json.JSONDecodeError:
@@ -690,11 +677,7 @@ def supervisor_request(method, endpoint, payload=None):
 
 def get_addon_options():
     """Read the authoritative options stored by Home Assistant."""
-    data = supervisor_request(
-        "GET",
-        f"/addons/{ADDON_SLUG}/info",
-    )
-
+    data = supervisor_request("GET", f"/addons/{ADDON_SLUG}/info",)
     options = data.get("options")
 
     if not isinstance(options, dict):
@@ -703,7 +686,6 @@ def get_addon_options():
         )
 
     return options
-
 
 def get_configured_streams():
     """Return the configured stream URLs."""
@@ -741,7 +723,6 @@ def load_saved_streams():
         print(f"⚠️ Could not read saved streams: {e}", flush=True)
         return []
 
-
 def save_saved_streams(streams):
     """Persist bookmarks without modifying Home Assistant options."""
     temp_file = SAVED_STREAMS_FILE + ".tmp"
@@ -753,35 +734,23 @@ def save_saved_streams(streams):
 
     os.replace(temp_file, SAVED_STREAMS_FILE)
 
-
 def save_configured_streams(stream_urls):
     """Update the add-on options without overwriting other settings."""
     options = get_addon_options()
-
-    # Keep the existing configuration and replace only the stream list.
     options["streams"] = list(dict.fromkeys(
         url.strip()
         for url in stream_urls
         if isinstance(url, str) and url.strip()
     ))
 
-    supervisor_request(
-        "POST",
-        f"/addons/{ADDON_SLUG}/options",
-        {"options": options},
-    )
-
+    supervisor_request("POST", f"/addons/{ADDON_SLUG}/options", {"options": options},)
 
 def restart_addon():
     """Restart after the HTTP response has had time to return."""
     def restart_worker():
         time.sleep(4)
-
         try:
-            supervisor_request(
-                "POST",
-                f"/addons/{ADDON_SLUG}/restart",
-            )
+            supervisor_request("POST", f"/addons/{ADDON_SLUG}/restart",)
             print("🔄 Add-on restart requested successfully")
 
         except Exception as e:
@@ -855,7 +824,6 @@ MB_REQUEST_LOCK_FILE = "/tmp/musicbrainz_api.lock"
 MB_CACHE_TTL = 30 * 24 * 60 * 60
 MB_SUGGESTION_LOCKS_GUARD = threading.Lock()
 MB_SUGGESTION_LOCKS = {}
-
 MUSICBRAINZ_REQUEST_LOCK = threading.Lock()
 MUSICBRAINZ_LAST_REQUEST = [0]
 MUSICBRAINZ_USER_AGENT = "JakesStationRipper/2026.11 (https://github.com/JakeLC15/Jakes-Radio-Rip)"
@@ -959,7 +927,6 @@ def musicbrainz_suggestion_genre(recording):
                 continue
 
             name = str(tag.get("name", "")).lower().strip()
-
             try:
                 count = int(tag.get("count", 1))
             except (TypeError, ValueError):
@@ -978,16 +945,10 @@ def musicbrainz_suggestion_genre(recording):
             reverse=True
         )
 
-        return [
-            genre.title()
-            for genre, score in sorted_genres[:3]
-        ]
+        return [genre.title() for genre, score in sorted_genres[:3]]
 
     except Exception as e:
-        print(
-            f"[MusicBrainz] Genre lookup failed: {e}",
-            flush=True
-        )
+        print(f"[MusicBrainz] Genre lookup failed: {e}", flush=True)
         return []
 
 def load_musicbrainz_cache():
@@ -1000,7 +961,6 @@ def load_musicbrainz_cache():
 
 def save_musicbrainz_cache(cache):
     temp_file = MB_CACHE_FILE + ".tmp"
-
     try:
         with open(temp_file, "w", encoding="utf-8") as f:
             json.dump(cache, f, ensure_ascii=False)
@@ -1022,27 +982,15 @@ def musicbrainz_request(function, *args, **kwargs):
                 # Support both musicbrainzngs functions and existing URL requests.
                 if callable(function):
                     result = function(*args, **kwargs)
-
                 else:
                     url = str(function)
-
-                    req = urllib.request.Request(
-                        url,
-                        headers={
-                            "User-Agent": MUSICBRAINZ_USER_AGENT,
-                            "Accept": "application/json"
-                        }
-                    )
+                    req = urllib.request.Request(url, headers={"User-Agent": MUSICBRAINZ_USER_AGENT, "Accept": "application/json"})
 
                     with urllib.request.urlopen(req, timeout=25) as response:
-                        raw = response.read().decode(
-                            "utf-8", errors="replace"
-                        )
+                        raw = response.read().decode("utf-8", errors="replace")
 
                     if not raw.strip():
-                        raise RuntimeError(
-                            "MusicBrainz returned an empty response"
-                        )
+                        raise RuntimeError("MusicBrainz returned an empty response")
 
                     result = json.loads(raw)
 
@@ -1053,10 +1001,7 @@ def musicbrainz_request(function, *args, **kwargs):
                 MUSICBRAINZ_LAST_REQUEST[0] = time.time()
 
                 message = str(e).lower()
-                is_503 = (
-                    "503" in message
-                    or "service unavailable" in message
-                )
+                is_503 = ("503" in message or "service unavailable" in message)
 
                 if is_503 and attempt < 2:
                     retry_after = getattr(
@@ -1070,10 +1015,7 @@ def musicbrainz_request(function, *args, **kwargs):
                     except (TypeError, ValueError):
                         delay = 4 * (2 ** attempt)
 
-                    print(
-                        f"[MusicBrainz] 503 error; retrying in {delay}s",
-                        flush=True
-                    )
+                    print(f"[MusicBrainz] 503 error; retrying in {delay}s", flush=True)
 
                     time.sleep(delay)
                     continue
@@ -1081,7 +1023,6 @@ def musicbrainz_request(function, *args, **kwargs):
                 raise
     with MB_CACHE_LOCK:
         cache = load_musicbrainz_cache()
-
         cache[cache_key] = {
             "timestamp": time.time(),
             "suggestions": suggestions
@@ -1089,11 +1030,7 @@ def musicbrainz_request(function, *args, **kwargs):
 
         save_musicbrainz_cache(cache)
 
-    return {
-        "query": query,
-        "suggestions": suggestions,
-        "cached": False
-    }
+    return {"query": query, "suggestions": suggestions, "cached": False}
     
 def _get_musicbrainz_suggestions_unlocked(path):
     artist, title, query = musicbrainz_query_for_file(path)
@@ -1398,8 +1335,6 @@ function stopFolderRefresh() {
 }
 
 function changeFilter(value) {
- // The list already carries a tagged/untagged marker on every visible row.
- // Filtering is purely presentational: never call the API or start a scan.
  currentFilter = value;
  applyFilter(value);
 }
@@ -1418,6 +1353,7 @@ function applyFilter(value) {
   }
  });
 }
+
 async function selectFile(path){
  try{
   const d=await getJSON({api:'music_info',path});
@@ -1444,7 +1380,6 @@ try {
     if (selected !== path) return;
 
     box.replaceChildren();
-
     box.append(el('p',
         `${d.suggestions.length} suggestion(s)${d.cached ? ' · cached' : ''}. Search: ${d.query}`,
         'muted'
@@ -1479,12 +1414,10 @@ try {
         row.type = 'button';
         row.className = 'mb-suggestion';
         row.style.cssText = 'display:block;width:100%;text-align:left;margin:8px 0;padding:12px;background:#263238;border:1px solid #03a9f4;border-radius:6px;white-space:normal;';
-
         row.append(el('div',
             `${i + 1}. ${item.artist} — ${item.title}`,
             'tagkey'
         ));
-
         row.append(el('div', [
             item.release,
             item.release_date ? item.release_date.substring(0, 4) : '',
@@ -1510,12 +1443,10 @@ try {
                 'muted'
             ));
         }
-
         row.append(el('div',
             '▶ Select this match and choose genres',
             'muted'
         ));
-
         row.onclick = () => applyMusicBrainzSuggestion(path, item, row);
         box.append(row);
     });
@@ -1532,7 +1463,6 @@ try {
     }
 
     genreStore.replaceChildren();
-
     combinedGenres.forEach(genre => {
         const input = document.createElement('input');
         input.type = 'hidden';
@@ -1560,32 +1490,22 @@ if(!item.id){
 }
 
 const box=document.getElementById('mbSuggestions');
-
 // Collect the combined genres from all five suggestions.
 const combinedGenres=new Map();
 
 box.querySelectorAll('.mb-combined-genres input[name="genres"]').forEach(checkbox=>{
     const genre=checkbox.value.trim();
-    if(genre){
-        combinedGenres.set(genre.toLowerCase(),genre);
-    }
+    if(genre){combinedGenres.set(genre.toLowerCase(),genre);}
 });
 
 const uniqueGenres=[...combinedGenres.values()];
-
 // Create the genre selection panel.
 const panel=document.createElement('div');
 panel.className='card';
 panel.style.marginTop='14px';
 panel.style.background='#303030';
-
 panel.append(el('h3','Choose Genres'));
-
-panel.append(el(
-    'p',
-    'Genres gathered from all five MusicBrainz suggestions. All are selected by default.',
-    'muted'
-));
+panel.append(el('p', 'Genres gathered from all five MusicBrainz suggestions. All are selected by default.', 'muted'));
 
 const genreContainer=document.createElement('div');
 genreContainer.style.cssText='display:flex;flex-wrap:wrap;gap:8px;margin:12px 0;';
@@ -1607,41 +1527,26 @@ uniqueGenres.forEach(genre=>{
 });
 
 if(!uniqueGenres.length){
-    genreContainer.append(el(
-        'p',
-        'No MusicBrainz genres were found. You can add your own below.',
-        'muted'
-    ));
+    genreContainer.append(el('p', 'No MusicBrainz genres were found. You can add your own below.', 'muted'));
 }
 
 panel.append(genreContainer);
-
-// Custom genre entry.
 panel.append(el('label','Add custom genres (separate multiple genres with semicolons)'));
-
 const customInput=document.createElement('input');
 customInput.type='text';
 customInput.placeholder='e.g. Americana; Southern Rock';
 customInput.id='mbCustomGenres';
 panel.append(customInput);
-
 const applyButton=el('button','Apply Selected Tags');
 applyButton.style.marginTop='12px';
-
 const cancelButton=el('button','Cancel');
 cancelButton.style.cssText='margin:12px 0 0 8px;background:#555;';
-
 applyButton.onclick=()=>saveMusicBrainzSuggestion(path,item,panel,applyButton);
 cancelButton.onclick=()=>loadMusicBrainzSuggestions(path);
-
 panel.append(applyButton,cancelButton);
-
-// Replace any previous selection panel.
 const oldPanel=box.querySelector('.card');
 if(oldPanel)oldPanel.remove();
-
 box.append(panel);
-
 panel.scrollIntoView({behavior:'smooth',block:'nearest'});
 }
 
@@ -1678,7 +1583,6 @@ async function saveMusicBrainzSuggestion(path,item,panel,button){
  }
 
  button.disabled=true;
-
  try{
   const body=new URLSearchParams();
 
@@ -1694,12 +1598,7 @@ async function saveMusicBrainzSuggestion(path,item,panel,button){
    body.append('genres',genre);
   });
 
-  const r=await fetch(basePath,{
-   method:'POST',
-   body,
-   credentials:'same-origin'
-  });
-
+  const r=await fetch(basePath,{method:'POST', body, credentials:'same-origin'});
   const result=await r.json();
 
   if(!r.ok||!result.ok){
@@ -1801,9 +1700,6 @@ async function saveFile(reset=false){
 loadFolder('',0);
 </script></body></html>"""
 
-# Large-folder MusicBrainz tag scans run in the background. Cache by filesystem
-# identity (device + inode) and metadata, not filename: renaming a track does not
-# invalidate its tag result. Only new/changed files need their ID3 tags reopened.
 MUSIC_TAG_SCAN_LOCK = Lock()
 MUSIC_TAG_FILE_CACHE = {}  # (device, inode) -> (size, mtime_ns, has_musicbrainz)
 MUSIC_TAG_SCAN_STATE = {}  # folder -> {signature, running, scanned, tagged_ids}
@@ -2819,10 +2715,7 @@ class IngressHandler(BaseHTTPRequestHandler):
                 self.wfile.write(page)
                 self.wfile.flush()
 
-                print(
-                    f"🔄 {action_text}; requesting add-on restart",
-                    flush=True,
-                )
+                print(f"🔄 {action_text}; requesting add-on restart", flush=True,)
                 restart_addon()
                 return
 
