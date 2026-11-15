@@ -2,7 +2,7 @@
 
 echo "========================================"
 echo "JAKE'S STATION RIPPER STARTING"
-echo "BUILD TEST: 2026-11-02-5"
+echo "BUILD TEST: 2026-11-15-1"
 echo "========================================"
 
 set -uo pipefail
@@ -266,6 +266,21 @@ watch_all_completed_files() {
             *.mp3|*.MP3) ;;
             *) continue ;;
         esac
+        # Identify YouTube downloads, including playlist batch folders.
+        IS_YOUTUBE_FILE="false"
+
+        case "$REAL_PATH" in
+            "${BASE_OUTPUT_DIR%/}/YouTube/"*)
+                IS_YOUTUBE_FILE="true"
+                ;;
+        esac
+
+        # Continuous radio recordings should not be processed,
+        # but YouTube downloads must still go through the tagger.
+        if [ "${CONTINUOUS_RECORDING}" = "true" ] && \
+           [ "$IS_YOUTUBE_FILE" != "true" ]; then
+            continue
+        fi
 
         case "$REAL_PATH" in
             */incomplete/*) continue ;;
@@ -273,7 +288,7 @@ watch_all_completed_files() {
 
         RAW_TITLE=$(basename "$REAL_PATH" .mp3)
 
-        # FIX: Corrected wildcards to look for text ending with " (1)"
+        # Corrected wildcards to look for text ending with " (1)"
         if [[ "$RAW_TITLE" == *" (1)" ]]; then
             if [ "${PURGE_DUPLICATES}" = "true" ]; then
                 echo "🧹 [Watcher] Native Bash Purge catching duplicate rip file: ${RAW_TITLE}.mp3"
@@ -306,7 +321,7 @@ watch_all_completed_files() {
             MIN_FILE_SIZE_BYTES=$(awk -v mb="$MIN_FILE_SIZE_MB" 'BEGIN { printf "%.0f", mb * 1024 * 1024 }')
 
             # 1. RUN AD CLEANUP PURGE CHECKS
-            if [ "$FILE_SIZE" -le 0 ] || [ "$FILE_SIZE" -lt "$MIN_FILE_SIZE_BYTES" ]; then
+            if [ "$IS_YOUTUBE_FILE" != "true" ] && { [ "$FILE_SIZE" -le 0 ] || [ "$FILE_SIZE" -lt "$MIN_FILE_SIZE_BYTES" ]; }; then
                 sleep 3
                 [ -f "$REAL_PATH" ] || exit 0
                 CURRENT_SIZE=$(stat -c%s "$REAL_PATH" 2>/dev/null) || exit 0
@@ -341,12 +356,10 @@ watch_all_completed_files() {
     done
 }
 
-# Start watcher if not in continuous_recording mode
 GLOBAL_WATCHER_PID=""
-if [ "${CONTINUOUS_RECORDING}" != "true" ]; then
-    watch_all_completed_files &
-    GLOBAL_WATCHER_PID=$!
-fi
+
+watch_all_completed_files &
+GLOBAL_WATCHER_PID=$!
 
 STREAM_URLS_JSON=$(printf '%s\n' "${STREAM_URLS[@]}" |
     jq -Rsc 'split("\n") | map(select(length > 0))')
